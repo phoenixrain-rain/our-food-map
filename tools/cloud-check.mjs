@@ -120,7 +120,7 @@ try {
   await pageA.locator('[data-nav="profile"]').click(); await pageA.locator('.setting-row[data-open="couple"]').click(); await expect(pageA.locator('#memberList .member')).toHaveCount(2);
   await pageA.screenshot({ path: '.private-audit/mobile-members.png' }); await pageA.locator('[data-close="coupleSheet"]').click(); await pageA.locator('[data-nav="home"]').click();
 
-  await pageB.locator('#mainAdd').click(); await pageB.locator('#restaurantName').fill('双人同步甜品店'); await pageB.locator('#price').fill('32.50');
+  await pageB.locator('#mainAdd').click(); await pageB.locator('#restaurantName').fill('双人同步甜品店'); await pageB.locator('#price').fill('32.50'); await pageB.locator('#category').fill('我们的周末甜品'); await pageB.locator('#visitDate').fill('2026-08-01');
   for (const [key, value] of [['taste', 9], ['value', 8], ['vibe', 7]]) await pageB.locator(`[data-rate="${key}"]`).evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); }, value);
   await pageB.locator('#photoInput').setInputFiles({ name: 'cloud-photo.jpg', mimeType: 'image/jpeg', buffer: jpeg });
   await expect(pageB.locator('#photoStatus')).toContainText('已就绪');
@@ -131,7 +131,8 @@ try {
   await expect(pageA.locator('#homeCards')).toContainText('双人同步甜品店', { timeout: 30000 });
   const dessert = pageA.locator('#homeCards .food-card').filter({ hasText: '双人同步甜品店' }); await expect(dessert.locator('img')).toBeVisible(); await expect.poll(() => dessert.locator('img').evaluate(img => img.naturalWidth)).toBeGreaterThan(0);
   await pageA.locator('[data-nav="records"]').click(); await pageA.locator('#recordSort').selectOption('value'); await pageA.screenshot({ path: '.private-audit/mobile-records.png' });
-  await pageA.locator('[data-nav="rank"]').click(); await pageA.screenshot({ path: '.private-audit/mobile-rank.png' });
+  await pageA.locator('[data-nav="rank"]').click(); await expect(pageA.locator('#rankList .food-card')).toHaveCount(1); await expect(pageA.locator('#rankList .metric.value')).toContainText('8.5'); await pageA.screenshot({ path: '.private-audit/mobile-rank.png' });
+  await expect(pageA.locator('#homeCards .food-title').first()).toHaveText('双人同步甜品店'); await expect(dessert.locator('.food-meta')).toContainText('我们的周末甜品');
   await pageA.setViewportSize({ width: 320, height: 640 }); assert.ok(await pageA.locator('main').evaluate(el => el.scrollWidth <= el.clientWidth + 1)); await pageA.screenshot({ path: '.private-audit/mobile-small.png' });
   // Replace my uploaded file while retaining the partner's file on the same record.
   const bPath = `${space.id}/${id}/${resources.users[1]}/${randomUUID()}.jpg`;
@@ -150,6 +151,37 @@ try {
   assert.equal(check(await a.from('food_photos').select('id').eq('path', bPath), 'partner photo retained').length, 1);
   await expect.poll(async () => Boolean((await a.storage.from('food-photos').createSignedUrl(path, 60)).error), { timeout: 15000 }).toBe(true);
   console.log('PASS cloud photo replacement, ownership and storage cleanup');
+  // Both members can archive/restore, but neither can accidentally edit a deleted post.
+  const currentBeforeTrash = check(await a.from('restaurants').select('*').eq('id', id).single(), 'read version before trash');
+  const photosBeforeTrash = check(await a.from('food_photos').select('id,path').eq('restaurant_id', id).order('id'), 'capture photos before trash');
+  assert.ok((await a.rpc('set_food_record_deleted', { p_id: id, p_deleted: true, p_expected_updated_at: originalVersion })).error?.message.includes('修改'), 'stale deletion must not apply');
+  assert.ok((await outsider.rpc('set_food_record_deleted', { p_id: id, p_deleted: true, p_expected_updated_at: currentBeforeTrash.updated_at })).error, 'outsider cannot delete');
+  await pageB.locator('#refreshBtn').click(); await expect(pageB.locator('#refreshBtn')).toHaveText('↻', { timeout: 20000 });
+  await pageB.locator('#homeCards [data-detail]').filter({ hasText: '周末小馆' }).click(); await pageB.locator('[data-edit]').click(); await pageB.locator('#reviewText').fill('另一半正在写的草稿');
+  await pageA.locator('#homeCards .food-card').filter({ hasText: '周末小馆' }).locator('.food-content').click();
+  await pageA.route('**/rest/v1/rpc/set_food_record_deleted', route => route.abort());
+  pageA.once('dialog', dialog => dialog.accept()); await pageA.locator(`[data-delete="${id}"]`).click(); await expect(pageA.locator('#toast')).toContainText('网络连接失败'); await expect(pageA.locator('#detailSheet')).toHaveClass(/open/);
+  await pageA.unroute('**/rest/v1/rpc/set_food_record_deleted');
+  pageA.once('dialog', dialog => dialog.accept()); await pageA.locator(`[data-delete="${id}"]`).click(); await expect(pageA.locator('#detailSheet')).not.toHaveClass(/open/, { timeout: 30000 });
+  await expect(pageB.locator('#saveMessage')).toContainText('已被移到回收站', { timeout: 30000 }); await expect(pageB.locator('#reviewText')).toHaveValue('另一半正在写的草稿');
+  await pageB.locator('#saveRecordBtn').click(); await expect(pageB.locator('#saveMessage')).toContainText('记录已删除');
+  assert.ok((await b.rpc('save_food_record', { p_restaurant: currentBeforeTrash })).error?.message.includes('记录已删除'), 'even a no-op stale save cannot succeed');
+  assert.ok((await b.from('reviews').update({ taste: 2 }).eq('restaurant_id', id).eq('user_id', resources.users[1])).error?.message.includes('记录已删除'), 'old direct review update rejected');
+  assert.ok((await b.from('restaurants').update({ name: '旧页面不应写入' }).eq('id', id)).error?.message.includes('记录已删除'), 'old direct restaurant update rejected');
+  const archived = check(await a.rpc('set_food_record_deleted', { p_id: id, p_deleted: true, p_expected_updated_at: currentBeforeTrash.updated_at }), 'idempotent delete retry');
+  assert.ok(archived.deleted_at); assert.equal(archived.created_at, currentBeforeTrash.created_at);
+  assert.deepEqual(check(await a.from('food_photos').select('id,path').eq('restaurant_id', id).order('id'), 'archived photos retained'), photosBeforeTrash);
+  await pageA.locator('[data-nav="rank"]').click(); await expect(pageA.locator('#rankList .food-card')).toHaveCount(0);
+  pageB.once('dialog', dialog => dialog.accept()); await pageB.locator('[data-close="editSheet"]').click(); await pageB.locator('[data-nav="profile"]').click(); await pageB.locator('[data-open="trash"]').click(); await expect(pageB.locator('#trashList .trash-record')).toHaveCount(1);
+  await pageB.screenshot({ path: '.private-audit/mobile-trash.png' }); await pageB.locator(`[data-restore="${id}"]`).click(); await expect(pageB.locator('#trashList .trash-record')).toHaveCount(0, { timeout: 30000 });
+  await expect(pageA.locator('#rankList .food-card')).toHaveCount(1, { timeout: 30000 }); await expect(pageA.locator('#rankList .metric.value')).toContainText('8.5');
+  const restored = check(await b.rpc('set_food_record_deleted', { p_id: id, p_deleted: false, p_expected_updated_at: archived.updated_at }), 'idempotent restore retry');
+  assert.equal(restored.deleted_at, null); assert.equal(restored.created_at, currentBeforeTrash.created_at);
+  assert.equal(check(await a.from('reviews').select('id').eq('restaurant_id', id), 'restored review count').length, 2);
+  assert.deepEqual(check(await a.from('food_photos').select('id,path').eq('restaurant_id', id).order('id'), 'restored photos retained'), photosBeforeTrash);
+  assert.equal((await fetch(check(await b.storage.from('food-photos').createSignedUrl(bPath, 60), 'restored photo readable').signedUrl)).status, 200);
+  await expect(pageA.locator('#homeCards .food-title').first()).toHaveText('双人同步甜品店');
+  console.log('PASS cloud delete failure/retry, partner realtime removal/restore, stale edit protection, trash permissions, intact photos/reviews and ranking order');
   await pageA.locator('[data-nav="profile"]').click(); await pageA.locator('[data-open="cloud"]').click(); await pageA.locator('#logoutBtn').click(); await expect(pageA.locator('#helloLine')).toContainText('本机档案', { timeout: 20000 });
   await expect(pageA.locator('#homeCards .food-card')).toHaveCount(0); assert.deepEqual(browserErrors, []);
   console.log('PASS real two-browser sync, member list, missing-photo fallback, failed upload retry, mobile UI and logout isolation');
@@ -173,3 +205,5 @@ try {
   if (!cleanupFailed) { await unlink(resourceFile).catch(() => {}); assert.deepEqual(await counts(), before); console.log('PASS test data removed; pre-existing row counts unchanged'); }
   else throw new Error(`Test cleanup incomplete; resource IDs are recorded in ${resourceFile}`);
 }
+// All checks and cleanup have completed. Supabase/HTTP background handles must not hang CI.
+process.exit(0);

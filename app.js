@@ -1,13 +1,14 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup } from './lib/model.js?v=2.0.0';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.0.0';
-import { loadLocal, saveLocal } from './lib/local-store.js?v=2.0.0';
-import { CloudRepository } from './lib/cloud.js?v=2.0.0';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup } from './lib/model.js?v=2.1.0';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.1.0';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.1.0';
+import { CloudRepository } from './lib/cloud.js?v=2.1.0';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const esc = (s = '') => String(s ?? '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 const DEFAULT_CONFIG = { url: 'https://ednkwzwxcowxboxmptvs.supabase.co', key: 'sb_publishable_gWqoh1ETeyGIxYMtNywdeg_mWQOOj3m' };
 const LOGIN_EMAIL_KEY = 'couple_food_pending_login_email_v1';
+const CATEGORIES = ['家常菜', '川湘菜', '粤菜', '江浙菜', '东北菜', '西北菜', '火锅', '烧烤烤肉', '海鲜', '小吃快餐', '面馆粉店', '日料', '韩餐', '西餐', '东南亚菜', '自助餐', '甜品烘焙', '咖啡茶饮', '其他'];
 let state = emptyData(), user = null, client = null, repository = null;
 let mode = 'loading', syncStatus = 'loading', activePage = 'home', activeFilter = 'all', rankKey = 'value';
 let authEpoch = 0, syncChain = Promise.resolve(), syncTimer, realtimeChannel, subscribedSpace, deferredInstallPrompt;
@@ -71,7 +72,20 @@ function cardHTML(r, rank = null) {
   const favoriteDish = [me?.favorite_dish, other?.favorite_dish].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(' / ');
   return `<article class="food-card" data-record="${esc(r.id)}"><div class="food-card-top"><div class="food-photo">${photoHTML(firstPhoto(r.id), r.name)}${rank !== null ? `<span class="rank-marker">${rank + 1}</span>` : ''}</div><button type="button" class="food-content" data-detail="${esc(r.id)}"><div class="food-line"><h3 class="food-title">${esc(r.name)}</h3><span class="record-state">${r.status === 'wishlist' ? '想吃' : '吃过'}</span></div><div class="food-meta">${esc([r.city, r.category].filter(Boolean).join(' · ') || '未填写位置')}</div>${favoriteDish ? `<div class="dish-line">推荐 ${esc(favoriteDish)}</div>` : `<div class="dish-line subtle">${esc(r.address || r.visit_date || '点开记录这一顿')}</div>`}<div class="tagline">${(r.tags || []).slice(0, 2).map(t => `<span class="tag">${esc(t)}</span>`).join('')}${s.bothFavorite ? '<span class="tag loved">♥ 共同最爱</span>' : ''}${s.wouldReturn ? '<span class="tag return">想二刷</span>' : ''}</div></button></div><button type="button" class="card-metrics-button" data-detail="${esc(r.id)}">${metricHTML(s, r.price_per_person, r.status === 'wishlist')}</button><div class="card-footer"><span>${reviewText}</span><button type="button" class="text-btn" data-detail="${esc(r.id)}">查看详情 ›</button></div></article>`;
 }
-function render() { renderHeader(); renderHome(); renderRecords(); renderRank(); renderProfile(); if (detailId) renderDetail(detailId); }
+function render() {
+  renderHeader(); renderHome(); renderRecords(); renderRank(); renderProfile(); renderTrash(); renderCategories();
+  if (detailId) renderDetail(detailId);
+  if (gallery.length && !state.restaurants.some(r => r.id === gallery[galleryIndex]?.restaurant_id)) { gallery = []; $('#photoViewer').classList.add('hidden'); }
+  if (editor?.original && state.trash.some(r => r.id === editor.id)) showFormMessage('这条记录已被移到回收站，请先关闭编辑并恢复记录。未保存的内容仍在此处。');
+}
+function renderCategories() {
+  const categories = [...new Set([...state.restaurants, ...state.trash].map(r => r.category).filter(Boolean).concat(CATEGORIES))];
+  $('#categoryOptions').innerHTML = categories.map(name => `<option value="${esc(name)}"></option>`).join('');
+}
+function renderTrash() {
+  $('#trashSummary').textContent = state.trash.length ? `${state.trash.length} 条已删除记录 · 可恢复` : '删除的记录可在这里恢复';
+  $('#trashList').innerHTML = [...state.trash].sort((a, b) => Date.parse(b.deleted_at) - Date.parse(a.deleted_at)).map(r => `<article class="trash-record"><div><h3>${esc(r.name)}</h3><p>${esc([r.city, r.category].filter(Boolean).join(' · '))}</p><small>${esc(new Date(r.deleted_at).toLocaleDateString('zh-CN'))} 移入 · 评价和照片保留</small></div><button type="button" class="secondary" data-restore="${esc(r.id)}">恢复</button></article>`).join('') || emptyCard('回收站是空的', '删除的记录会保留在这里，需要时可恢复。', '');
+}
 function renderHeader() {
   const connected = mode === 'cloud' && state.space && syncStatus === 'ready' && navigator.onLine;
   $('#syncDot').className = `sync-dot ${connected ? 'cloud' : 'local'}`;
@@ -89,7 +103,7 @@ function renderHeader() {
 function renderHome() {
   const eaten = sortRestaurants(state.restaurants.filter(r => r.status === 'eaten'), state);
   const wish = sortRestaurants(state.restaurants.filter(r => r.status === 'wishlist'), state);
-  $('#recordCountText').textContent = eaten.length ? `已经记下 ${eaten.length} 家 · 每一项各有答案` : '从你们喜欢的一家店开始';
+  $('#recordCountText').textContent = eaten.length ? `${eaten.length} 条记录 · 按上传时间从新到旧` : '按上传时间从新到旧 · 记下你们喜欢的一家店';
   $('#homeCards').innerHTML = eaten.slice(0, 4).map(r => cardHTML(r)).join('') || emptyCard('第一顿，从这里开始', '记下味道、性价比、环境和人均。');
   $('#wishCards').innerHTML = wish.slice(0, 2).map(r => cardHTML(r)).join('') || '<div class="empty"><h3>下次约会想吃什么？</h3><p>先记店名和预算，吃过之后再评分。</p><button type="button" class="primary" data-add-wish>加一家想吃的</button></div>';
   const photos = sortRestaurants(state.restaurants.filter(r => state.photos.some(p => p.restaurant_id === r.id)), state).slice(0, 8);
@@ -103,9 +117,10 @@ function renderRecords() {
 }
 function renderRank() {
   const labels = { value: '性价比', taste: '味道', vibe: '环境', price: '人均', overall: '综合' };
-  const rows = sortRestaurants(state.restaurants.filter(r => r.status === 'eaten' && (rankKey === 'price' ? r.price_per_person !== null : summary(state, r)[rankKey] !== null)), state, rankKey);
-  $('#rankExplanation').textContent = rankKey === 'price' ? '实付人均从低到高；未填人均和想吃预算不参与排名。' : rankKey === 'overall' ? '味道 50% + 性价比 30% + 环境 20%。只计算三项齐全的评价，再取两人的平均分。' : `${labels[rankKey]}从高到低；每项只平均已填写的分数。卡片下方可查看谁还没完成评分。`;
-  $('#rankList').innerHTML = rows.slice(0, 20).map((r, i) => cardHTML(r, i)).join('') || emptyCard(`还没有${labels[rankKey]}榜单`, `给吃过的餐厅补充${labels[rankKey] === '综合' ? '三个主评分' : labels[rankKey]}，这里就会生成排名。`, '');
+  const rows = rankedRestaurants(state, rankKey);
+  const pending = state.restaurants.filter(r => r.status === 'eaten' && summary(state, r).completeCount < 2).length;
+  $('#rankExplanation').textContent = '每条记录只排一次，双方填完味道、性价比、环境后入榜。' + (rankKey === 'price' ? '实付人均从低到高；未填人均不入此榜。' : rankKey === 'overall' ? '双人平均分：味道 50% + 性价比 30% + 环境 20%。' : `${labels[rankKey]}取双方平均，从高到低。`) + (pending ? ` 还有 ${pending} 条等待双方完成评价。` : '');
+  $('#rankList').innerHTML = rows.map((r, i) => cardHTML(r, i)).join('') || emptyCard(`还没有${labels[rankKey]}榜单`, '双方在同一条记录中完成三个主评分后，这条记录才会入榜。', '');
   $$('#rankTabs [data-rank]').forEach(b => b.classList.toggle('active', b.dataset.rank === rankKey));
   const eaten = state.restaurants.filter(r => r.status === 'eaten'), costs = eaten.map(r => r.price_per_person).filter(p => p !== null), match = tasteMatch(state, selfId());
   $('#statsGrid').innerHTML = `<div class="stat"><small>吃过的餐厅</small><strong>${eaten.length}</strong><p>想吃清单不计入</p></div><div class="stat"><small>已记录平均人均</small><strong>${formatPrice(mean(costs))}</strong><p>来自 ${costs.length} 家已填人均的餐厅</p></div><div class="stat"><small>双方完成主评分</small><strong>${eaten.filter(r => summary(state, r).completeCount === 2).length}</strong><p>每人填完味道、性价比和环境</p></div><div class="stat"><small>口味接近度</small><strong>${match.value === null ? '—' : `${match.value}%`}</strong><p>基于 ${match.count} 家双方的味道分</p></div>`;
@@ -139,7 +154,7 @@ function switchPage(page) {
 }
 
 function renderDetail(id) {
-  const r = state.restaurants.find(x => x.id === id); if (!r) return;
+  const r = state.restaurants.find(x => x.id === id); if (!r) { closeSheet('detailSheet', true); return; }
   const rs = reviewsFor(state, id), s = summary(state, r), photos = state.photos.filter(p => p.restaurant_id === id);
   const persons = [selfId(), ...state.members.filter(m => m.user_id !== selfId()).map(m => m.user_id)];
   if (persons.length === 1 && rs.some(rv => rv.user_id !== selfId())) persons.push(rs.find(rv => rv.user_id !== selfId()).user_id);
@@ -147,7 +162,32 @@ function renderDetail(id) {
     const review = rs.find(rv => rv.user_id === person);
     return `<div class="person-card"><div class="who">${esc(ownerName(person))}</div>${CORE_DIMS.map(([key, label]) => `<div class="person-metric"><span>${label}</span><b>${formatScore(rating(review?.[key]))}</b></div>`).join('')}<div class="dimline"><span>综合</span><b>${formatScore(reviewScore(review))}</b></div>${EXTRA_DIMS.filter(([key]) => rating(review?.[key]) !== null).map(([key, label]) => `<div class="dimline"><span>${label}</span><b>${formatScore(review[key])}</b></div>`).join('')}${review?.favorite_dish ? `<div class="quote">推荐菜：${esc(review.favorite_dish)}</div>` : ''}${review?.comment ? `<div class="quote">${esc(review.comment)}</div>` : ''}<div class="tagline">${review?.favorite ? '<span class="tag loved">♥ 我的最爱</span>' : ''}${review?.would_return ? '<span class="tag return">想二刷</span>' : ''}</div></div>`;
   }).join('') : '<p class="help-text">还没去过，先记录预算和期待。吃过后再留下评分。</p>';
-  $('#detailBody').innerHTML = `<div class="detail-cover">${photoHTML(firstPhoto(id), r.name)}</div><h2 class="detail-title">${esc(r.name)}</h2><p class="detail-meta">${esc([r.city, r.category, r.address, r.visit_date].filter(Boolean).join(' · ') || '还没有补充地址')}</p>${metricHTML(s, r.price_per_person, r.status === 'wishlist')}<div class="compare">${cards}</div><p class="help-text">${r.status === 'eaten' ? '分项为已填写分数的平均值；每人的评价独立保存。' : '预算仅供挑选餐厅参考，不计入实付统计。'}</p>${photos.length ? `<div class="section-head"><h2>这一顿的照片 <small>${photos.length}</small></h2></div><div class="photo-wall">${photos.map(p => photoHTML(p, `${r.name} · ${ownerName(p.user_id)}`)).join('')}</div>` : ''}<button type="button" class="save-btn" style="margin-top:18px" data-edit="${esc(id)}">${r.status === 'wishlist' ? '编辑 / 我们吃过了' : '编辑记录 / 写我的评价'}</button>`;
+  $('#detailBody').innerHTML = `<div class="detail-cover">${photoHTML(firstPhoto(id), r.name)}</div><h2 class="detail-title">${esc(r.name)}</h2><p class="detail-meta">${esc([r.city, r.category, r.address, r.visit_date ? `用餐 ${r.visit_date}` : ''].filter(Boolean).join(' · ') || '还没有补充地址')}</p><p class="help-text">上传于 ${esc(r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '未记录时间')}</p>${metricHTML(s, r.price_per_person, r.status === 'wishlist')}<div class="compare">${cards}</div><p class="help-text">${r.status === 'eaten' ? '分项为已填写分数的平均值；每人的评价独立保存，双方评完后共同入榜。' : '预算仅供挑选餐厅参考，不计入实付统计。'}</p>${photos.length ? `<div class="section-head"><h2>这一顿的照片 <small>${photos.length}</small></h2></div><div class="photo-wall">${photos.map(p => photoHTML(p, `${r.name} · ${ownerName(p.user_id)}`)).join('')}</div>` : ''}<button type="button" class="save-btn" style="margin-top:18px" data-edit="${esc(id)}">${r.status === 'wishlist' ? '编辑 / 我们吃过了' : '编辑记录 / 写我的评价'}</button><button type="button" class="delete-record" data-delete="${esc(id)}">删除这条记录</button><p class="help-text">空间中的两人都可以删除；可到“我们 → 回收站”恢复。</p>`;
+}
+async function setRecordDeleted(id, deleted, button) {
+  const row = (deleted ? state.restaurants : state.trash).find(r => r.id === id);
+  if (!row || mode === 'loading') return;
+  if (deleted && !window.confirm(`将“${row.name}”移入回收站？\n两人的列表和榜单都会移除它，评价和照片会保留，可在“我们 → 回收站”恢复。`)) return;
+  const epoch = authEpoch, operationMode = mode;
+  await buttonAction(button, async () => {
+    if (operationMode === 'cloud') {
+      if (!navigator.onLine) throw new Error('当前离线，恢复网络后再操作');
+      await repository.setDeleted(row, deleted);
+      if (epoch !== authEpoch) return;
+      try { await refreshCloud(); } catch { toast('操作已成功，列表同步暂时失败，请点击 ↻ 刷新', 6000); return; }
+    } else {
+      const next = await mutateLocal(data => {
+        const source = data[deleted ? 'restaurants' : 'trash'].find(r => r.id === id);
+        if (!source) return;
+        if (source.updated_at !== row.updated_at) throw new Error('记录刚刚被修改，请刷新后再操作');
+        const now = new Date().toISOString();
+        data.restaurants = data.restaurants.filter(r => r.id !== id); data.trash = data.trash.filter(r => r.id !== id);
+        data[deleted ? 'trash' : 'restaurants'].push({ ...source, deleted_at: deleted ? now : null, deleted_by: deleted ? 'local-me' : null, updated_at: now });
+      }, state);
+      if (epoch !== authEpoch) return; state = next; render();
+    }
+    toast(deleted ? '已移入回收站，可在“我们 → 回收站”恢复' : '记录已恢复，双方评价和照片仍在');
+  }, deleted ? '正在删除…' : '正在恢复…');
 }
 function showDetail(id) { detailId = id; renderDetail(id); openSheet('detailSheet'); }
 function showGallery(id) {
@@ -181,7 +221,7 @@ function openEditor(id = null, status = 'eaten') {
   $('#editId').value = editor.id; $('#editTitle').textContent = r ? '编辑记录 / 我的评价' : status === 'wishlist' ? '加入想吃清单' : '记下这一顿';
   $('#editSub').textContent = r ? '餐厅信息两人共享；这里只编辑你自己的评价。' : mode === 'cloud' ? '保存后，另一半也能看到这家餐厅。' : '当前记录保存在本机，暂不同步到另一台设备。';
   $('#restaurantName').value = r?.name || ''; $('#city').value = r?.city || ''; $('#category').value = r?.category || '其他';
-  if (!$('#category').value) { $('#category').add(new Option(r.category, r.category)); $('#category').value = r.category; }
+  renderCategories();
   $('#address').value = r?.address || ''; $('#visitDate').value = r ? r.visit_date || '' : status === 'eaten' ? todayLocal() : '';
   $('#price').value = r?.price_per_person ?? ''; $('#tags').value = (r?.tags || []).join('，');
   $('#favoriteDish').value = rv?.favorite_dish || ''; $('#reviewText').value = rv?.comment || '';
@@ -232,7 +272,8 @@ async function addPhotos(files) {
 }
 function collectDraft() {
   if (existingEditorPhotos().filter(p => p.user_id === selfId()).length + editor.added.length > MAX_PHOTOS) throw new Error(`每人每家最多 ${MAX_PHOTOS} 张照片，请移除多出的照片`);
-  const restaurant = validateRestaurant({ id: editor.id, space_id: state.space?.id || 'local-space', name: $('#restaurantName').value.trim(), city: $('#city').value.trim(), category: $('#category').value, address: $('#address').value.trim(), visit_date: $('#visitDate').value || null, price_per_person: $('#price').value.trim() === '' ? null : Number($('#price').value), tags: [...new Set($('#tags').value.split(/[，,]/).map(s => s.trim()).filter(Boolean))].slice(0, 20), status: editor.status });
+  if (state.trash.some(r => r.id === editor.id)) throw new Error('记录已删除，请先从回收站恢复');
+  const restaurant = validateRestaurant({ id: editor.id, space_id: state.space?.id || 'local-space', name: $('#restaurantName').value.trim(), city: $('#city').value.trim(), category: $('#category').value.trim() || '其他', address: $('#address').value.trim(), visit_date: $('#visitDate').value || null, price_per_person: $('#price').value.trim() === '' ? null : Number($('#price').value), tags: [...new Set($('#tags').value.split(/[，,]/).map(s => s.trim()).filter(Boolean))].slice(0, 20), status: editor.status });
   const review = editor.status === 'eaten' ? { ...Object.fromEntries(DIMS.map(([key]) => [key, rating($(`[data-rate="${key}"]`).value)])), favorite_dish: $('#favoriteDish').value.trim(), comment: $('#reviewText').value.trim(), favorite: $('#favoriteToggle').classList.contains('on'), would_return: $('#againToggle').classList.contains('on') } : null;
   const hasReview = review && (myReview(editor.id) || DIMS.some(([key]) => review[key] !== null) || review.favorite_dish || review.comment || review.favorite || review.would_return);
   return { restaurant, review: hasReview ? review : null, added: editor.added, removed: [...editor.removed], expected: editor.original?.updated_at };
@@ -249,12 +290,17 @@ async function saveRecord(event) {
     else {
       updateProgress('正在保存照片和记录…');
       const dataURLs = await Promise.all(draft.added.map(p => blobDataURL(p.file)));
-      const next = structuredClone(state), now = new Date().toISOString();
-      const r = { ...draft.restaurant, created_at: editor.original?.created_at || now, updated_at: now };
-      next.restaurants = [r, ...next.restaurants.filter(x => x.id !== r.id)];
-      if (draft.review) next.reviews = [...next.reviews.filter(x => !(x.restaurant_id === r.id && x.user_id === 'local-me')), { ...draft.review, id: myReview(r.id)?.id || crypto.randomUUID(), restaurant_id: r.id, space_id: 'local-space', user_id: 'local-me', updated_at: now }];
-      next.photos = [...next.photos.filter(p => !draft.removed.includes(p.id) || p.user_id !== 'local-me'), ...dataURLs.map(url => ({ id: crypto.randomUUID(), restaurant_id: r.id, user_id: 'local-me', url, created_at: now }))];
-      await saveLocal(next); if (epoch === authEpoch) state = next;
+      const next = await mutateLocal(data => {
+        if (data.trash.some(r => r.id === draft.restaurant.id)) throw new Error('记录已删除，请先从回收站恢复');
+        const current = data.restaurants.find(r => r.id === draft.restaurant.id);
+        if (current && current.updated_at !== draft.expected) throw new Error('记录刚刚被修改，请重新打开后再保存');
+        const now = new Date().toISOString(), r = { ...draft.restaurant, created_at: current?.created_at || now, updated_at: now };
+        const reviewId = data.reviews.find(x => x.restaurant_id === r.id && x.user_id === 'local-me')?.id;
+        data.restaurants = [r, ...data.restaurants.filter(x => x.id !== r.id)];
+        if (draft.review) data.reviews = [...data.reviews.filter(x => !(x.restaurant_id === r.id && x.user_id === 'local-me')), { ...draft.review, id: reviewId || crypto.randomUUID(), restaurant_id: r.id, space_id: 'local-space', user_id: 'local-me', updated_at: now }];
+        data.photos = [...data.photos.filter(p => !draft.removed.includes(p.id) || p.user_id !== 'local-me'), ...dataURLs.map(url => ({ id: crypto.randomUUID(), restaurant_id: r.id, user_id: 'local-me', url, created_at: now }))];
+      }, state);
+      if (epoch === authEpoch) state = next;
     }
     editor.added.forEach(p => URL.revokeObjectURL(p.preview)); editor = null;
     closeSheet('editSheet', true);
@@ -362,7 +408,7 @@ async function saveNickname() {
     if (mode === 'cloud') {
       if (!state.space) throw new Error('请先加入情侣空间，再设置昵称');
       const { error } = await client.from('space_members').update({ nickname: name }).eq('space_id', state.space.id).eq('user_id', user.id); if (error) throw error; await refreshCloud();
-    } else { const next = { ...state, nickname: name }; await saveLocal(next); state = next; render(); }
+    } else { const epoch = authEpoch, next = await mutateLocal(data => { data.nickname = name; }, state); if (epoch !== authEpoch) return; state = next; render(); }
     closeSheet('identitySheet'); toast('昵称已保存');
   });
 }
@@ -398,12 +444,16 @@ async function importBackup(file) {
     if (file.size > 100 * 1024 * 1024) throw new Error('备份文件不能超过 100 MB');
     const imported = validateBackup(JSON.parse(await file.text()));
     if (mode !== 'local' || user) throw new Error('登录状态已变化，请重新导入');
-    const next = structuredClone(state);
+    const epoch = authEpoch;
     const merge = (a, b, key) => { const known = new Set(a.map(key)); return [...a, ...b.filter(x => { const id = key(x); if (known.has(id)) return false; known.add(id); return true; })]; };
-    next.restaurants = merge(next.restaurants, imported.restaurants, r => r.id);
-    next.reviews = merge(next.reviews, imported.reviews, r => `${r.restaurant_id}:${r.user_id}`);
-    next.photos = merge(next.photos, imported.photos, p => p.id);
-    await saveLocal(next); state = next; render(); toast('备份已合并到本机，原有同编号记录保持不变');
+    const next = await mutateLocal(data => {
+      const knownRecords = new Set([...data.restaurants, ...data.trash].map(r => r.id));
+      data.restaurants = merge(data.restaurants, imported.restaurants.filter(r => !knownRecords.has(r.id)), r => r.id);
+      data.trash = merge(data.trash, imported.trash.filter(r => !knownRecords.has(r.id)), r => r.id);
+      data.reviews = merge(data.reviews, imported.reviews, r => `${r.restaurant_id}:${r.user_id}`);
+      data.photos = merge(data.photos, imported.photos, p => p.id);
+    }, state);
+    if (epoch !== authEpoch) return; state = next; render(); toast('备份已合并到本机，原有同编号记录保持不变');
   } catch (error) { toast(friendly(error), 6500); } finally { $('#importInput').value = ''; }
 }
 function randomPick() {
@@ -427,6 +477,8 @@ document.addEventListener('click', event => {
   const target = event.target.closest('button, [data-open], [data-close], [data-filter-go], [data-go]'); if (!target || target.disabled) return;
   if (target.dataset.photo) return showGallery(target.dataset.photo);
   if (target.dataset.detail) return showDetail(target.dataset.detail);
+  if (target.dataset.delete) return setRecordDeleted(target.dataset.delete, true, target);
+  if (target.dataset.restore) return setRecordDeleted(target.dataset.restore, false, target);
   if (target.dataset.edit) { const id = target.dataset.edit; closeSheet('detailSheet'); return openEditor(id); }
   if (target.hasAttribute('data-add')) return openEditor();
   if (target.hasAttribute('data-add-wish')) return openEditor(null, 'wishlist');

@@ -70,7 +70,7 @@ test('installed shell reloads offline and only removes its own old caches', asyn
     await navigator.serviceWorker.register('/service-worker.js'); await navigator.serviceWorker.ready;
   });
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
-  const keys = await page.evaluate(() => caches.keys()); expect(keys).toContain('other-application'); expect(keys).not.toContain('our-food-map-shell-v1'); expect(keys).toContain('our-food-map-shell-v3');
+  const keys = await page.evaluate(() => caches.keys()); expect(keys).toContain('other-application'); expect(keys).not.toContain('our-food-map-shell-v1'); expect(keys).toContain('our-food-map-shell-v4');
   await context.setOffline(true); await page.reload(); await expect(page.locator('#homeCards .food-card')).toContainText('离线本机档案'); await expect(page.locator('#connectionBanner')).toContainText('当前离线');
 });
 test('OTP errors and resend cooldown are visible without sending a real email', async ({ page }) => {
@@ -90,4 +90,79 @@ test('backup merge preserves existing records, escapes content, and restores ima
   await page.locator('#importInput').setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(data)) });
   await expect(page.locator('#homeCards .food-card')).toHaveCount(1); await expect(page.locator('#homeCards .food-title')).not.toHaveText('不应覆盖');
   await page.reload(); await expect(page.locator('#homeCards img')).toHaveCount(1); await expect(page.locator('#homeCards .metric.price')).toContainText('¥0');
+});
+
+async function seedRecords(page) {
+  const data = { restaurants: [
+    { id: 'complete', name: '双方评价的旧上传', category: '火锅', status: 'eaten', price_per_person: 60, created_at: '2026-09-15T01:00:00Z', visit_date: '2026-09-17', updated_at: '2026-09-20T01:00:00Z' },
+    { id: 'pending', name: '单人评价的新上传', category: '咖啡茶饮', status: 'eaten', price_per_person: 20, created_at: '2026-09-16T01:00:00Z', visit_date: '2026-08-01' }
+  ], reviews: [
+    { id: 'a', restaurant_id: 'complete', user_id: 'local-me', taste: 10, value: 8, vibe: 6 },
+    { id: 'b', restaurant_id: 'complete', user_id: 'local-partner', taste: 6, value: 6, vibe: 10 },
+    { id: 'c', restaurant_id: 'pending', user_id: 'local-me', taste: 10, value: 10, vibe: 10 }
+  ], photos: [{ id: 'p', restaurant_id: 'complete', user_id: 'local-me', url: `data:image/png;base64,${pixel.toString('base64')}` }] };
+  await page.addInitScript(data => { if (!localStorage.getItem('seeded')) { localStorage.setItem('seeded', 'yes'); localStorage.setItem('couple_food_mobile_v2', JSON.stringify(data)); } }, data);
+  return data;
+}
+
+test('recent uploads and shared ranking stay correct after editing and every rank tab', async ({ page }) => {
+  await seedRecords(page); await ready(page);
+  await expect(page.locator('#homeCards .food-title')).toHaveText(['单人评价的新上传', '双方评价的旧上传']);
+  await page.locator('[data-nav="records"]').click(); await expect(page.locator('#recordList .food-title')).toHaveText(['单人评价的新上传', '双方评价的旧上传']);
+  await page.locator('[data-nav="rank"]').click();
+  for (const key of ['value', 'taste', 'vibe', 'price', 'overall']) {
+    await page.locator(`[data-rank="${key}"]`).click(); await expect(page.locator('#rankList .food-card')).toHaveCount(1); await expect(page.locator('#rankList .food-title')).toHaveText('双方评价的旧上传');
+  }
+  await expect(page.locator('#rankList .metric.taste')).toContainText('8.0'); await expect(page.locator('#rankList .metric.value')).toContainText('7.0');
+  await page.locator('#rankList .food-content').click(); await page.locator('[data-edit]').click(); await page.locator('#address').fill('刚刚修改地址'); await page.locator('#saveRecordBtn').click(); await expect(page.locator('#editSheet')).not.toHaveClass(/open/);
+  await page.locator('[data-nav="home"]').click(); await expect(page.locator('#homeCards .food-title').first()).toHaveText('单人评价的新上传');
+});
+
+test('delete, cancel, failed delete retry, reload and restore preserve both reviews and photos', async ({ page }) => {
+  const backup = await seedRecords(page); await ready(page);
+  await page.locator('#homeCards [data-detail="complete"]').first().click();
+  page.once('dialog', dialog => dialog.dismiss()); await page.locator('[data-delete="complete"]').click(); await expect(page.locator('#detailSheet')).toHaveClass(/open/);
+  await page.evaluate(() => { window.originalPut = IDBObjectStore.prototype.put; IDBObjectStore.prototype.put = function() { throw new DOMException('Storage full', 'QuotaExceededError'); }; });
+  page.once('dialog', dialog => dialog.accept()); await page.locator('[data-delete="complete"]').click(); await expect(page.locator('#toast')).toContainText('Storage full'); await expect(page.locator('#homeCards .food-card')).toHaveCount(2);
+  await page.evaluate(() => { IDBObjectStore.prototype.put = window.originalPut; });
+  page.once('dialog', dialog => dialog.accept()); await page.locator('[data-delete="complete"]').click(); await expect(page.locator('#detailSheet')).not.toHaveClass(/open/); await expect(page.locator('#homeCards .food-card')).toHaveCount(1);
+  await page.reload(); await expect(page.locator('#homeCards .food-card')).toHaveCount(1); await page.locator('[data-nav="rank"]').click(); await expect(page.locator('#rankList .food-card')).toHaveCount(0);
+  await page.locator('[data-nav="profile"]').click(); await expect(page.locator('#trashSummary')).toContainText('1 条');
+  // Importing an older active backup must not resurrect the deleted ID.
+  await page.locator('[data-open="backup"]').click(); await page.locator('#importInput').setInputFiles({ name: 'old.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) }); await expect(page.locator('#toast')).toContainText('已合并'); await expect(page.locator('#homeCards .food-card')).toHaveCount(1); await page.locator('[data-close="backupSheet"]').click();
+  await page.locator('[data-open="trash"]').click(); await expect(page.locator('#trashList .trash-record')).toHaveCount(1); await page.locator('[data-restore="complete"]').click(); await expect(page.locator('#trashList .trash-record')).toHaveCount(0); await page.locator('[data-close="trashSheet"]').click();
+  await page.reload(); await expect(page.locator('#homeCards .food-title')).toHaveText(['单人评价的新上传', '双方评价的旧上传']); await page.locator('#homeCards [data-detail="complete"]').first().click();
+  await expect(page.locator('#detailBody .person-card')).toHaveCount(2); await expect(page.locator('#detailBody .metric.value')).toContainText('7.0'); await expect(page.locator('#detailBody .photo-wall img')).toBeVisible();
+  await page.locator('[data-close="detailSheet"]').click(); await page.locator('[data-nav="rank"]').click(); await expect(page.locator('#rankList .food-card')).toHaveCount(1);
+});
+
+test('category presets and custom labels persist and are suggested on later entries', async ({ page }) => {
+  await ready(page); await page.locator('#mainAdd').click(); await expect(page.locator('#categoryOptions option[value="火锅"]')).toHaveCount(1);
+  await page.locator('#restaurantName').fill('自定义分类店'); await page.locator('#category').fill('  学校旁的小馆  '); await page.locator('#saveRecordBtn').click(); await expect(page.locator('#editSheet')).not.toHaveClass(/open/);
+  await page.reload(); await expect(page.locator('#homeCards .food-meta')).toContainText('学校旁的小馆'); await page.locator('#mainAdd').click(); await expect(page.locator('#categoryOptions option[value="学校旁的小馆"]')).toHaveCount(1);
+  await page.locator('#restaurantName').fill('空分类店'); await page.locator('#category').fill(''); await page.locator('#saveRecordBtn').click(); await expect(page.locator('#editSheet')).not.toHaveClass(/open/); await expect(page.locator('#homeCards .food-card').first().locator('.food-meta')).toContainText('其他');
+});
+
+test('two local tabs never overwrite independent saves or revive a deleted record', async ({ page, context }) => {
+  await ready(page); const other = await context.newPage(); await ready(other);
+  await page.locator('#mainAdd').click(); await other.locator('#mainAdd').click();
+  await page.locator('#restaurantName').fill('第一个页面'); await other.locator('#restaurantName').fill('第二个页面');
+  await Promise.all([page.locator('#saveRecordBtn').click(), other.locator('#saveRecordBtn').click()]);
+  await expect(page.locator('#editSheet')).not.toHaveClass(/open/); await expect(other.locator('#editSheet')).not.toHaveClass(/open/);
+  await page.reload(); await other.reload(); await expect(page.locator('#homeCards .food-card')).toHaveCount(2); await expect(other.locator('#homeCards .food-card')).toHaveCount(2);
+  for (const p of [page, other]) await p.locator('#homeCards .food-card').filter({ hasText: '第一个页面' }).locator('.food-content').click();
+  await other.locator('[data-edit]').click(); await other.locator('#reviewText').fill('这条草稿不能复活已经删除的记录');
+  page.once('dialog', dialog => dialog.accept()); await page.locator('[data-delete]').click(); await expect(page.locator('#detailSheet')).not.toHaveClass(/open/);
+  await other.locator('#saveRecordBtn').click(); await expect(other.locator('#saveMessage')).toContainText('记录已删除'); await expect(other.locator('#reviewText')).toHaveValue('这条草稿不能复活已经删除的记录');
+  await page.reload(); await expect(page.locator('#homeCards .food-card')).toHaveCount(1); await page.locator('[data-nav="profile"]').click(); await expect(page.locator('#trashSummary')).toContainText('1 条');
+});
+
+test('hundreds of records remain searchable and sortable without truncating rankings', async ({ page }) => {
+  const data = { restaurants: Array.from({ length: 600 }, (_, i) => ({ id: `r${i}`, name: `餐厅编号${String(i).padStart(3, '0')}`, category: i % 2 ? '火锅' : '我的自定义分类', status: 'eaten', created_at: new Date(Date.UTC(2026, 8, 1, 0, i)).toISOString(), price_per_person: i % 100 })),
+    reviews: Array.from({ length: 600 }, (_, i) => ['local-me', 'local-partner'].map(user_id => ({ id: `${user_id}${i}`, restaurant_id: `r${i}`, user_id, taste: 8, value: i % 9 + 1, vibe: 7 }))).flat(), photos: [] };
+  await page.addInitScript(data => localStorage.setItem('couple_food_mobile_v2', JSON.stringify(data)), data);
+  await ready(page); await expect(page.locator('#homeCards .food-title').first()).toHaveText('餐厅编号599');
+  await page.locator('[data-nav="rank"]').click(); await expect(page.locator('#rankList .food-card')).toHaveCount(600);
+  await page.locator('[data-rank="price"]').click(); await expect(page.locator('#rankList .food-card').first().locator('.metric.price')).toContainText('¥0');
+  await page.locator('[data-nav="records"]').click(); await page.locator('#searchInput').fill('餐厅编号599'); await expect(page.locator('#recordList .food-card')).toHaveCount(1);
 });

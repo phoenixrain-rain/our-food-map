@@ -13,8 +13,8 @@
 <link rel="apple-touch-icon" sizes="180x180" href="./icons/app-icon-180.png" />
 <link rel="icon" type="image/png" sizes="192x192" href="./icons/app-icon-192.png" />
 <title>两个人的美食地图</title>
-<script src="./vendor/supabase.js?v=2.0.0"></script>
-<link rel="stylesheet" href="./styles.css?v=2.0.0" />
+<script src="./vendor/supabase.js?v=2.1.0"></script>
+<link rel="stylesheet" href="./styles.css?v=2.1.0" />
 </head>
 <body>
 
@@ -42,7 +42,7 @@
         <button class="quick" data-quick="stats"><i>📊</i><span>美食统计</span></button>
       </div>
       <div class="section">
-        <div class="section-head"><div><h2>最近吃过</h2><p id="recordCountText">还没有共同记录</p></div><button class="text-btn" data-go="records">查看更多</button></div>
+        <div class="section-head"><div><h2>最近吃过</h2><p id="recordCountText">按上传时间从新到旧</p></div><button class="text-btn" data-go="records">查看更多</button></div>
         <div id="homeCards"></div>
       </div>
       <div class="section">
@@ -60,7 +60,7 @@
       <div class="filter-bar" id="filterBar">
         <button class="chip active" data-filter="all">全部</button><button class="chip" data-filter="eaten">吃过</button><button class="chip" data-filter="wishlist">想吃</button><button class="chip" data-filter="favorite">共同最爱</button><button class="chip" data-filter="mine-pending">待我评分</button><button class="chip" data-filter="pending">待 TA 评分</button><button class="chip" data-filter="again">想二刷</button>
       </div>
-      <div class="list-controls"><span id="resultsCount"></span><label>排序 <select id="recordSort" aria-label="记录排序"><option value="recent">最近记录</option><option value="value">性价比优先</option><option value="taste">味道优先</option><option value="vibe">环境优先</option><option value="price">人均从低到高</option></select></label></div>
+      <div class="list-controls"><span id="resultsCount"></span><label>排序 <select id="recordSort" aria-label="记录排序"><option value="recent">最新上传</option><option value="value">性价比优先</option><option value="taste">味道优先</option><option value="vibe">环境优先</option><option value="price">人均从低到高</option></select></label></div>
       <div id="recordList"></div>
     </section>
 
@@ -78,9 +78,10 @@
         <div class="setting-row" data-open="identity"><div><strong>昵称与身份</strong><small>设置你在共同档案里的显示名称</small></div><span class="chev">›</span></div>
         <div class="setting-row" data-open="install"><div><strong>安装到手机</strong><small>添加到桌面，以独立 App 窗口打开</small></div><span class="mode-badge" id="installBadge">可安装</span></div>
         <div class="setting-row" data-open="backup"><div><strong>数据备份</strong><small>导出记录和照片，本机模式可合并导入</small></div><span class="chev">›</span></div>
+        <div class="setting-row" data-open="trash"><div><strong>回收站</strong><small id="trashSummary">删除的记录可以在这里恢复</small></div><span class="chev">›</span></div>
       </div>
       <div class="profile-card">
-        <div class="section-head" style="margin:0 0 7px"><div><h2 style="font-size:16px">美食地图 2.0</h2><p>味道有偏好，值不值得也有自己的答案</p></div></div>
+        <div class="section-head" style="margin:0 0 7px"><div><h2 style="font-size:16px">美食地图 2.1</h2><p>同一条记录，两个人评价，一起排榜</p></div></div>
         <div class="help-text">评分采用 10 分制，未评的项目不算作 0 分。综合分按味道 50%、性价比 30%、环境 20% 计算，三项齐全才显示。人均单独展示，服务与颜值作为补充。</div>
       </div>
     </section>
@@ -100,7 +101,8 @@
   <input type="hidden" id="editId" />
   <div class="form-section"><h4>🍽 餐厅信息</h4>
     <div class="field"><label for="restaurantName">餐厅 / 店名 *</label><input class="input" id="restaurantName" required maxlength="120" placeholder="例如：老四季抻面" /></div>
-    <div class="field-row"><div class="field"><label>城市</label><input class="input" id="city" placeholder="沈阳" /></div><div class="field"><label>分类</label><select class="select" id="category"><option>东北菜</option><option>火锅</option><option>烧烤</option><option>日料</option><option>韩餐</option><option>西餐</option><option>甜品</option><option>咖啡</option><option>小吃</option><option>其他</option></select></div></div>
+    <div class="field-row"><div class="field"><label for="city">城市</label><input class="input" id="city" placeholder="沈阳" /></div><div class="field"><label for="category">分类（可自定义）</label><input class="input" id="category" list="categoryOptions" maxlength="40" placeholder="选择或自己填写" autocomplete="off" /><datalist id="categoryOptions"></datalist></div></div>
+    <p class="help-text">例如火锅、川湘菜、面馆；也可以直接填写自己的分类。</p>
     <div class="field"><label>地址 / 分店</label><input class="input" id="address" placeholder="可选，用来区分同品牌不同门店" /></div>
     <div class="field-row"><div class="field"><label for="visitDate" id="visitDateLabel">用餐日期（可选）</label><input class="input" type="date" id="visitDate" /></div><div class="field"><label for="price" id="priceLabel">实付人均 ¥</label><input class="input" type="number" inputmode="decimal" min="0" max="99999999.99" step="0.01" id="price" placeholder="未填写" /></div></div>
     <div class="field"><label>标签</label><input class="input" id="tags" placeholder="约会、夜宵、排队值得、生日…" /></div>
@@ -145,8 +147,9 @@
 </div></div>
 
 <div class="lightbox hidden" id="photoViewer" role="dialog" aria-modal="true" aria-label="查看照片"><button type="button" class="viewer-close" id="closePhotoViewer" aria-label="关闭照片">×</button><button type="button" class="viewer-nav previous" id="previousPhoto" aria-label="上一张">‹</button><div class="viewer-body"><img id="viewerImage" alt="餐厅照片" /><p id="viewerCaption"></p><button type="button" class="secondary hidden" id="retryPhoto">重新加载</button></div><button type="button" class="viewer-nav next" id="nextPhoto" aria-label="下一张">›</button></div>
+<div class="sheet-wrap" id="trashSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>回收站</h3><p>恢复时会一起恢复双方评价和照片。</p></div><button type="button" class="x" data-close="trashSheet">×</button></div><div id="trashList"></div></div></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=2.0.0"></script>
+<script type="module" src="./app.js?v=2.1.0"></script>
 </body>
 </html>

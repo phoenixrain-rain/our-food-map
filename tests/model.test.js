@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyData, rating, reviewScore, summary, tasteMatch, filterRestaurants, sortRestaurants, formatPrice, todayLocal, validateBackup, safeImageURL } from '../lib/model.js';
+import { emptyData, rating, reviewScore, summary, tasteMatch, filterRestaurants, sortRestaurants, rankedRestaurants, formatPrice, todayLocal, validateBackup, safeImageURL } from '../lib/model.js';
 const restaurant = (id, price = null, status = 'eaten') => ({ id, name: id, status, price_per_person: price, created_at: '2026-09-16' });
 test('unrated and partial ratings never become automatic 8s or zeros', () => {
   assert.equal(rating(null), null); assert.equal(rating(''), null); assert.equal(rating(false), null); assert.equal(rating(0), null); assert.equal(rating(11), null);
@@ -41,4 +41,42 @@ test('backups validate links and references and never restore a cloud scope', ()
 });
 test('local calendar dates use device date components', () => {
   assert.equal(todayLocal(new Date(2026, 8, 16, 0, 1)), '2026-09-16');
+});
+
+test('recent means upload time, never visit date or last edit time', () => {
+  const rows = [
+    { ...restaurant('older-upload'), created_at: '2026-09-15T01:00:00Z', visit_date: '2026-09-17', updated_at: '2026-09-20' },
+    { ...restaurant('new-upload'), created_at: '2026-09-16T01:00:00Z', visit_date: '2026-08-01', updated_at: '2026-09-16' }
+  ];
+  assert.deepEqual(sortRestaurants(rows, emptyData()).map(r => r.id), ['new-upload', 'older-upload']);
+});
+
+test('each post ranks once only after both people finish, averaging both equally', () => {
+  const rows = ['both', 'single', 'partial', 'best', 'trash'].map(id => restaurant(id, id === 'best' ? 0 : 60));
+  rows[4].deleted_at = '2026-09-17';
+  const data = { ...emptyData(), restaurants: [...rows, rows[0]], reviews: [
+    ...['both', 'best', 'trash'].flatMap(id => [
+      { restaurant_id: id, user_id: 'a', taste: 9, value: 10, vibe: 8 },
+      { restaurant_id: id, user_id: 'b', taste: 7, value: id === 'best' ? 8 : 4, vibe: 6 }
+    ]),
+    { restaurant_id: 'single', user_id: 'a', taste: 10, value: 10, vibe: 10 },
+    { restaurant_id: 'partial', user_id: 'a', taste: 10, value: 10, vibe: 10 },
+    { restaurant_id: 'partial', user_id: 'b', taste: 10, value: 10 },
+    { restaurant_id: 'single', user_id: 'a', taste: 10, value: 10, vibe: 10 }
+  ] };
+  assert.deepEqual(rankedRestaurants(data).map(r => r.id), ['best', 'both']);
+  assert.deepEqual(rankedRestaurants(data, 'price').map(r => r.id), ['best', 'both']);
+  assert.equal(summary(data, rows[0]).value, 7);
+  data.reviews.find(r => r.restaurant_id === 'both' && r.user_id === 'b').vibe = null;
+  assert.deepEqual(rankedRestaurants(data).map(r => r.id), ['best']);
+});
+
+test('trash backup retains both reviews and photos without restoring into active records', () => {
+  const data = { ...emptyData(), trash: [{ ...restaurant('deleted'), deleted_at: '2026-09-17T01:00:00Z', deleted_by: 'local-me' }],
+    reviews: ['local-me', 'local-partner'].map(user_id => ({ id: user_id, restaurant_id: 'deleted', user_id, taste: 9 })),
+    photos: [{ id: 'p', restaurant_id: 'deleted', user_id: 'local-me', url: 'data:image/png;base64,AAAA' }] };
+  const imported = validateBackup(data);
+  assert.equal(imported.restaurants.length, 0); assert.equal(imported.trash.length, 1);
+  assert.equal(imported.reviews.length, 2); assert.equal(imported.photos[0].url, data.photos[0].url);
+  data.trash[0].deleted_at = ''; assert.throws(() => validateBackup(data), /删除时间/);
 });
