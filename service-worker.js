@@ -1,4 +1,4 @@
-const CACHE_NAME = 'our-food-map-shell-v1';
+const CACHE_NAME = 'our-food-map-shell-v2';
 const APP_SHELL = [
   './',
   './index.html',
