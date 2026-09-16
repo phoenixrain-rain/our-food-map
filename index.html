@@ -185,6 +185,10 @@ main{min-height:0;min-width:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow
 'use strict';
 const LOCAL_KEY='couple_food_mobile_v2';
 const CLOUD_KEY='couple_food_supabase_config_v1';
+const DEFAULT_CLOUD_CONFIG={
+  url:'https://ednkwzwxcowxboxmptvs.supabase.co',
+  key:'sb_publishable_gWqoh1ETeyGIxYMtNywdeg_mWQOOj3m'
+};
 const DIMS=[['taste','味道'],['value','性价比'],['service','服务'],['vibe','氛围'],['look','颜值']];
 const today=()=>new Date().toISOString().slice(0,10);
 const $=s=>document.querySelector(s);const $$=s=>[...document.querySelectorAll(s)];
@@ -205,7 +209,7 @@ function scheduleScrollState(){requestAnimationFrame(()=>requestAnimationFrame(u
 
 function loadLocal(){try{return {...defaultState(),...JSON.parse(localStorage.getItem(LOCAL_KEY)||'{}')}}catch{return defaultState()}}
 function saveLocal(){localStorage.setItem(LOCAL_KEY,JSON.stringify(state))}
-function cloudConfig(){try{return JSON.parse(localStorage.getItem(CLOUD_KEY)||'{}')}catch{return {}}}
+function cloudConfig(){try{return {...DEFAULT_CLOUD_CONFIG,...JSON.parse(localStorage.getItem(CLOUD_KEY)||'{}')}}catch{return {...DEFAULT_CLOUD_CONFIG}}}
 function toast(msg){const el=$('#toast');el.textContent=msg;el.classList.add('show');clearTimeout(el._t);el._t=setTimeout(()=>el.classList.remove('show'),2200)}
 function openSheet(id){$('#'+id)?.classList.add('open')}
 function closeSheet(id){$('#'+id)?.classList.remove('open')}
@@ -249,7 +253,7 @@ async function reloadData(){if(client&&user&&state.space){const [rr,rv,pp]=await
 function subscribeRealtime(){realtimeChannels.forEach(c=>client.removeChannel(c));realtimeChannels=[];if(!client||!state.space)return;['restaurants','reviews','food_photos'].forEach(table=>{const ch=client.channel(`food-${table}-${state.space.id}`).on('postgres_changes',{event:'*',schema:'public',table,filter:`space_id=eq.${state.space.id}`},()=>reloadData()).subscribe();realtimeChannels.push(ch)})}
 async function saveCloudConfig(){const url=$('#supabaseUrl').value.trim(),key=$('#supabaseKey').value.trim();if(!url||!key)return toast('请填写 Project URL 和 key');localStorage.setItem(CLOUD_KEY,JSON.stringify({url,key}));client=null;user=null;await initCloud();toast(client?'连接配置已保存':'配置已保存，请检查项目参数');render()}
 async function sendLogin(){if(!client)return toast('请先保存 Supabase 配置');const email=$('#loginEmail').value.trim();if(!email)return toast('请输入邮箱');const options={};if(location.protocol.startsWith('http'))options.emailRedirectTo=location.origin+location.pathname;const {error}=await client.auth.signInWithOtp({email,options});if(error)return toast(error.message);toast('登录邮件已发送，请查看邮箱')}
-async function createSpace(){if(!client||!user)return toast('请先登录');const name=$('#newSpaceName').value.trim()||'我们的美食地图',code=('LOVE'+Math.random().toString(36).slice(2,7)).toUpperCase();const {data,error}=await client.from('spaces').insert({name,invite_code:code,created_by:user.id}).select().single();if(error)return toast(error.message);const {error:memErr}=await client.from('space_members').insert({space_id:data.id,user_id:user.id,nickname:state.nickname||'我',role:'owner'});if(memErr)return toast(memErr.message);state.space=data;await reloadData();renderProfile();toast('空间已创建，把邀请码发给 TA')}
+async function createSpace(){if(!client||!user)return toast('请先登录');const name=$('#newSpaceName').value.trim()||'我们的美食地图';const {error}=await client.rpc('create_space',{p_name:name,p_nickname:state.nickname||'我'});if(error)return toast(error.message);await loadMembership();await reloadData();subscribeRealtime();toast('空间已创建，把邀请码发给 TA')}
 async function joinSpace(){if(!client||!user)return toast('请先登录');const code=$('#joinCode').value.trim().toUpperCase();if(!code)return toast('请输入邀请码');const {data,error}=await client.rpc('join_space_by_code',{p_code:code,p_nickname:state.nickname||'我'});if(error)return toast(error.message);await loadMembership();await reloadData();subscribeRealtime();toast(data?.message||'已加入共同空间')}
 async function saveNickname(){const name=$('#nicknameInput').value.trim()||'我';state.nickname=name;if(client&&user&&state.space){const {error}=await client.from('space_members').update({nickname:name}).eq('space_id',state.space.id).eq('user_id',user.id);if(error)return toast(error.message)}else saveLocal();render();toast('昵称已保存')}
 function randomPick(){const pool=state.restaurants.filter(r=>r.status==='wishlist'||(r.status==='eaten'&&restaurantReviews(r.id).some(x=>x.would_return)));if(!pool.length)return toast('先加几家想吃或想二刷的店');const r=pool[Math.floor(Math.random()*pool.length)];toast(`今晚去：${r.name}`);setTimeout(()=>showDetail(r.id),700)}
