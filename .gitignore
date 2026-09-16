@@ -10,4 +10,7 @@ desktop.ini
 
 # 本地部署缓存
 .netlify/
-
+node_modules/
+test-results/
+playwright-report/
+.private-audit/
