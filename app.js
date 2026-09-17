@@ -1,7 +1,7 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup } from './lib/model.js?v=2.1.0';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.1.0';
-import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.1.0';
-import { CloudRepository } from './lib/cloud.js?v=2.1.0';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.2.0';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.2.0';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.2.0';
+import { CloudRepository } from './lib/cloud.js?v=2.2.0';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -10,7 +10,7 @@ const DEFAULT_CONFIG = { url: 'https://ednkwzwxcowxboxmptvs.supabase.co', key: '
 const LOGIN_EMAIL_KEY = 'couple_food_pending_login_email_v1';
 const CATEGORIES = ['家常菜', '川湘菜', '粤菜', '江浙菜', '东北菜', '西北菜', '火锅', '烧烤烤肉', '海鲜', '小吃快餐', '面馆粉店', '日料', '韩餐', '西餐', '东南亚菜', '自助餐', '甜品烘焙', '咖啡茶饮', '其他'];
 let state = emptyData(), user = null, client = null, repository = null;
-let mode = 'loading', syncStatus = 'loading', activePage = 'home', activeFilter = 'all', rankKey = 'value';
+let mode = 'loading', syncStatus = 'loading', activePage = 'home', activeFilter = 'all', rankKey = 'value', recordView = 'places';
 let authEpoch = 0, syncChain = Promise.resolve(), syncTimer, realtimeChannel, subscribedSpace, deferredInstallPrompt;
 let editor = null, saving = false, photosBusy = false, detailId = null, gallery = [], galleryIndex = 0, cooldownUntil = 0;
 let toastTimer, sessionKnown = false, lastFocused;
@@ -21,7 +21,7 @@ const initials = name => [...(String(name || 'TA').trim())].slice(0, 2).join('')
 const ownerName = id => id === selfId() ? `${state.nickname || '我'}（我）` : state.members.find(m => m.user_id === id)?.nickname || state.partnerName || 'TA';
 function toast(message, duration = 4000) { $('#toast').textContent = message; $('#toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('show'), duration); }
 function friendly(error) {
-  const message = error?.message || String(error);
+  const message = (error?.message || String(error)).replace('每人每家', '每人每次打卡');
   if (/fetch|network|networkerror|load failed/i.test(message)) return '网络连接失败，内容仍保留。请检查网络后重试';
   if (error?.code === 'otp_expired' || /invalid.*otp|token has expired or is invalid/i.test(message)) return '验证码无效或已过期，请重新发送';
   if (/row.level|permission|JWT|token.*expired/i.test(message)) return '登录或空间权限已变化，请刷新后重试';
@@ -66,11 +66,22 @@ function firstPhoto(id) { const photos = state.photos.filter(p => p.restaurant_i
 function metricHTML(stat, price, budget = false) {
   return `<div class="food-metrics">${CORE_DIMS.map(([key, label]) => `<div class="metric ${key}"><span>${label}</span><b>${formatScore(stat[key])}</b></div>`).join('')}<div class="metric price"><span>${budget ? '预算人均' : '实付人均'}</span><b>${formatPrice(price)}</b></div></div>`;
 }
-function cardHTML(r, rank = null) {
+function visitHistoryHTML(rows, selectedId = null) {
+  if (rows.length < 2) return '';
+  return `<details class="visit-history" data-history="${esc(placeKey(rows[0]))}"><summary>查看 ${rows.filter(r => r.status === 'eaten').length} 次打卡${rows.some(r => r.status === 'wishlist') ? '与想吃计划' : ''}</summary><div>${rows.map(r => {
+    const stat = summary(state, r);
+    return `<div class="visit-row ${r.id === selectedId ? 'current' : ''}"><div class="visit-thumbnail">${photoHTML(firstPhoto(r.id), r.name)}</div><button type="button" class="visit-open" data-detail="${esc(r.id)}"><strong>${esc(r.visit_date || '未填用餐日期')} · ${esc(visitLabel(state, r))}</strong><span>味道 ${formatScore(stat.taste)} · 性价比 ${formatScore(stat.value)} · 环境 ${formatScore(stat.vibe)}</span><small>${formatPrice(r.price_per_person)} / 人 · ${stat.completeCount}/2 人已评${r.id === selectedId ? ' · 当前展示' : ''}</small></button></div>`;
+  }).join('')}</div></details>`;
+}
+function openHistories(selector) { return new Set($$(selector + ' .visit-history[open]').map(el => el.dataset.history)); }
+function restoreHistories(selector, keys) { $$(selector + ' .visit-history').forEach(el => { el.open = keys.has(el.dataset.history); }); }
+function renderHistoryList(selector, html) { const opened = openHistories(selector); $(selector).innerHTML = html; restoreHistories(selector, opened); }
+function cardHTML(r, rank = null, grouped = false) {
   const s = summary(state, r), me = myReview(r.id), other = partnerReview(r.id);
+  const visits = visitsFor(state, r), eatenCount = visits.filter(v => v.status === 'eaten').length;
   const reviewText = r.status === 'wishlist' ? '想吃清单 · 还没去过' : `我${isComplete(me) ? '已评' : '待评'} · ${esc(state.partnerName || 'TA')}${isComplete(other) ? '已评' : '待评'}`;
   const favoriteDish = [me?.favorite_dish, other?.favorite_dish].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(' / ');
-  return `<article class="food-card" data-record="${esc(r.id)}"><div class="food-card-top"><div class="food-photo">${photoHTML(firstPhoto(r.id), r.name)}${rank !== null ? `<span class="rank-marker">${rank + 1}</span>` : ''}</div><button type="button" class="food-content" data-detail="${esc(r.id)}"><div class="food-line"><h3 class="food-title">${esc(r.name)}</h3><span class="record-state">${r.status === 'wishlist' ? '想吃' : '吃过'}</span></div><div class="food-meta">${esc([r.city, r.category].filter(Boolean).join(' · ') || '未填写位置')}</div>${favoriteDish ? `<div class="dish-line">推荐 ${esc(favoriteDish)}</div>` : `<div class="dish-line subtle">${esc(r.address || r.visit_date || '点开记录这一顿')}</div>`}<div class="tagline">${(r.tags || []).slice(0, 2).map(t => `<span class="tag">${esc(t)}</span>`).join('')}${s.bothFavorite ? '<span class="tag loved">♥ 共同最爱</span>' : ''}${s.wouldReturn ? '<span class="tag return">想二刷</span>' : ''}</div></button></div><button type="button" class="card-metrics-button" data-detail="${esc(r.id)}">${metricHTML(s, r.price_per_person, r.status === 'wishlist')}</button><div class="card-footer"><span>${reviewText}</span><button type="button" class="text-btn" data-detail="${esc(r.id)}">查看详情 ›</button></div></article>`;
+  return `<article class="food-card" data-record="${esc(r.id)}" data-place="${esc(r.place_id || r.id)}"><div class="food-card-top"><div class="food-photo">${photoHTML(firstPhoto(r.id), r.name)}${rank !== null ? `<span class="rank-marker">${rank + 1}</span>` : ''}</div><button type="button" class="food-content" data-detail="${esc(r.id)}"><div class="food-line"><h3 class="food-title">${esc(r.name)}</h3><span class="record-state">${grouped && eatenCount ? `去过 ${eatenCount} 次` : r.status === 'wishlist' ? '想吃' : '吃过'}</span></div><div class="food-meta">${esc([r.city, r.category].filter(Boolean).join(' · ') || '未填写位置')}</div>${favoriteDish ? `<div class="dish-line">推荐 ${esc(favoriteDish)}</div>` : `<div class="dish-line subtle">${esc(r.address || '点开记录这一顿')}</div>`}<div class="tagline">${(r.tags || []).slice(0, 2).map(t => `<span class="tag">${esc(t)}</span>`).join('')}${s.bothFavorite ? '<span class="tag loved">♥ 共同最爱</span>' : ''}${s.wouldReturn ? '<span class="tag return">想二刷</span>' : ''}</div></button></div><div class="visit-context"><span>${esc(visitLabel(state, r))}</span><span>${rank !== null ? '入榜打卡 ' : ''}${esc(r.visit_date || '未填用餐日期')}</span></div><button type="button" class="card-metrics-button" data-detail="${esc(r.id)}">${metricHTML(s, r.price_per_person, r.status === 'wishlist')}</button><div class="card-footer"><span>${reviewText}</span><button type="button" class="text-btn" data-detail="${esc(r.id)}">查看这一顿 ›</button></div>${grouped ? `<div class="place-actions"><span>${rank !== null ? '显示最近一次双方评完的打卡' : '显示最近一次符合筛选的记录'}</span><button type="button" class="text-btn" data-repeat="${esc(r.id)}">＋ 再来一次</button></div>${visitHistoryHTML(visits, r.id)}` : ''}</article>`;
 }
 function render() {
   renderHeader(); renderHome(); renderRecords(); renderRank(); renderProfile(); renderTrash(); renderCategories();
@@ -95,7 +106,7 @@ function renderHeader() {
   $('#faceMe').textContent = initials(state.nickname); $('#profileFace').textContent = initials(state.nickname); $('#facePartner').textContent = initials(state.partnerName);
   const match = tasteMatch(state, selfId());
   $('#matchScore').textContent = match.value === null ? '—' : `${match.value}%`;
-  $('#matchScore').title = match.count ? `基于 ${match.count} 家双方都填写味道分的餐厅` : '双方给同一家店的味道评分后生成';
+  $('#matchScore').title = match.count ? `基于 ${match.count} 次双方都填写味道分的打卡` : '双方给同一顿的味道评分后生成';
   $('#heroMembers').textContent = mode !== 'cloud' ? '登录后和 TA 一起记录 ›' : !state.space ? '创建或加入情侣空间 ›' : state.members.length === 2 ? `${state.nickname} 和 ${state.partnerName} · 两人已加入 ›` : '1/2 位成员 · 等待另一半加入 ›';
   const warning = !navigator.onLine ? (mode === 'cloud' ? '当前离线，云端记录暂时不能保存；已加载的内容仍可查看。' : '当前离线，本机记录仍可保存。') : syncStatus === 'error' ? '同步失败，已显示的内容会保留。请点右上角 ↻ 重试。' : mode === 'cloud' && !state.space && syncStatus === 'ready' ? '请先在“我们 → 情侣空间”创建或加入空间，再添加共同记录。' : '';
   $('#connectionBanner').textContent = warning; $('#connectionBanner').classList.toggle('hidden', !warning);
@@ -110,20 +121,24 @@ function renderHome() {
   $('#storyRow').innerHTML = photos.map(r => `<button type="button" class="story" data-detail="${esc(r.id)}"><div class="story-ring"><div>${safeImageURL(firstPhoto(r.id)?.url) ? `<img src="${esc(firstPhoto(r.id).url)}" alt="${esc(r.name)}" loading="lazy">` : '🍴'}</div></div><span>${esc(r.name)}</span></button>`).join('') || '<p class="help-text">添加照片后，这里会留下你们的美食相册。</p>';
 }
 function renderRecords() {
-  const rows = sortRestaurants(filterRestaurants(state, { filter: activeFilter, query: $('#searchInput').value, selfId: selfId() }), state, $('#recordSort').value);
-  $('#resultsCount').textContent = `${rows.length} 家餐厅`;
-  $('#recordList').innerHTML = rows.map(r => cardHTML(r)).join('') || emptyCard('没有符合条件的记录', '试试其他筛选条件或关键词。', '');
+  const matched = filterRestaurants(state, { filter: activeFilter, query: $('#searchInput').value, selfId: selfId() }), groups = groupRestaurants(state, matched);
+  const sortKey = $('#recordSort').value;
+  const rows = sortRestaurants(recordView === 'places' ? groups.map(g => sortKey === 'recent' ? sortRestaurants(g.visits, state, 'recent')[0] : g.latest) : matched, state, sortKey);
+  $('#resultsCount').textContent = `${groups.length} 家店 · ${matched.length} 条记录`;
+  $('#recordViewHelp').textContent = recordView === 'places' ? '每店一张卡，显示最近一次符合筛选的打卡；展开可回看全部历史。未填用餐日期的记录排在最后。' : '逐次展示每一顿；同店标注第几次打卡。默认按用餐日期倒序，未填日期的排在最后。';
+  $$('#recordViews button').forEach(b => b.classList.toggle('active', b.dataset.recordView === recordView));
+  renderHistoryList('#recordList', rows.map(r => cardHTML(r, null, recordView === 'places')).join('') || emptyCard('没有符合条件的记录', '试试其他筛选条件或关键词。', ''));
   $$('#filterBar [data-filter]').forEach(b => b.classList.toggle('active', b.dataset.filter === activeFilter));
 }
 function renderRank() {
   const labels = { value: '性价比', taste: '味道', vibe: '环境', price: '人均', overall: '综合' };
   const rows = rankedRestaurants(state, rankKey);
   const pending = state.restaurants.filter(r => r.status === 'eaten' && summary(state, r).completeCount < 2).length;
-  $('#rankExplanation').textContent = '每条记录只排一次，双方填完味道、性价比、环境后入榜。' + (rankKey === 'price' ? '实付人均从低到高；未填人均不入此榜。' : rankKey === 'overall' ? '双人平均分：味道 50% + 性价比 30% + 环境 20%。' : `${labels[rankKey]}取双方平均，从高到低。`) + (pending ? ` 还有 ${pending} 条等待双方完成评价。` : '');
-  $('#rankList').innerHTML = rows.map((r, i) => cardHTML(r, i)).join('') || emptyCard(`还没有${labels[rankKey]}榜单`, '双方在同一条记录中完成三个主评分后，这条记录才会入榜。', '');
+  $('#rankExplanation').textContent = '每家店只排一次，采用用餐日期最近、双方三个主评分齐全的一次打卡；新打卡未评完前保留上次成绩。' + (rankKey === 'price' ? '按这次实付人均从低到高，未填金额不入此榜。' : rankKey === 'overall' ? '双人平均：味道 50% + 性价比 30% + 环境 20%。' : `${labels[rankKey]}取双方平均，从高到低。`) + (pending ? ` ${pending} 次打卡仍待评。` : '');
+  renderHistoryList('#rankList', rows.map((r, i) => cardHTML(r, i, true)).join('') || emptyCard(`还没有${labels[rankKey]}榜单`, '双方在同一次打卡中完成三个主评分后，这家店才会入榜。', ''));
   $$('#rankTabs [data-rank]').forEach(b => b.classList.toggle('active', b.dataset.rank === rankKey));
   const eaten = state.restaurants.filter(r => r.status === 'eaten'), costs = eaten.map(r => r.price_per_person).filter(p => p !== null), match = tasteMatch(state, selfId());
-  $('#statsGrid').innerHTML = `<div class="stat"><small>吃过的餐厅</small><strong>${eaten.length}</strong><p>想吃清单不计入</p></div><div class="stat"><small>已记录平均人均</small><strong>${formatPrice(mean(costs))}</strong><p>来自 ${costs.length} 家已填人均的餐厅</p></div><div class="stat"><small>双方完成主评分</small><strong>${eaten.filter(r => summary(state, r).completeCount === 2).length}</strong><p>每人填完味道、性价比和环境</p></div><div class="stat"><small>口味接近度</small><strong>${match.value === null ? '—' : `${match.value}%`}</strong><p>基于 ${match.count} 家双方的味道分</p></div>`;
+  $('#statsGrid').innerHTML = `<div class="stat"><small>吃过的店铺</small><strong>${groupRestaurants(state, eaten).length}</strong><p>共 ${eaten.length} 次打卡，复访不多算店铺</p></div><div class="stat"><small>每次打卡平均人均</small><strong>${formatPrice(mean(costs))}</strong><p>来自 ${costs.length} 次已填人均的打卡</p></div><div class="stat"><small>双方完成主评分</small><strong>${eaten.filter(r => summary(state, r).completeCount === 2).length}</strong><p>次打卡 · 每次双方三个主评分齐全</p></div><div class="stat"><small>口味接近度</small><strong>${match.value === null ? '—' : `${match.value}%`}</strong><p>基于 ${match.count} 次双方的味道分</p></div>`;
   const counts = new Map(); eaten.forEach(r => counts.set(r.category || '其他', (counts.get(r.category || '其他') || 0) + 1));
   const categories = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 7), max = categories[0]?.[1] || 1;
   $('#categoryBars').innerHTML = categories.map(([name, count]) => `<div class="bar-row"><span>${esc(name)}</span><div class="bar"><i style="width:${count / max * 100}%"></i></div><b>${count}</b></div>`).join('') || '<p class="help-text">记录后会显示你们常吃的分类。</p>';
@@ -155,6 +170,7 @@ function switchPage(page) {
 
 function renderDetail(id) {
   const r = state.restaurants.find(x => x.id === id); if (!r) { closeSheet('detailSheet', true); return; }
+  const openedHistory = openHistories('#detailBody');
   const rs = reviewsFor(state, id), s = summary(state, r), photos = state.photos.filter(p => p.restaurant_id === id);
   const persons = [selfId(), ...state.members.filter(m => m.user_id !== selfId()).map(m => m.user_id)];
   if (persons.length === 1 && rs.some(rv => rv.user_id !== selfId())) persons.push(rs.find(rv => rv.user_id !== selfId()).user_id);
@@ -163,6 +179,9 @@ function renderDetail(id) {
     return `<div class="person-card"><div class="who">${esc(ownerName(person))}</div>${CORE_DIMS.map(([key, label]) => `<div class="person-metric"><span>${label}</span><b>${formatScore(rating(review?.[key]))}</b></div>`).join('')}<div class="dimline"><span>综合</span><b>${formatScore(reviewScore(review))}</b></div>${EXTRA_DIMS.filter(([key]) => rating(review?.[key]) !== null).map(([key, label]) => `<div class="dimline"><span>${label}</span><b>${formatScore(review[key])}</b></div>`).join('')}${review?.favorite_dish ? `<div class="quote">推荐菜：${esc(review.favorite_dish)}</div>` : ''}${review?.comment ? `<div class="quote">${esc(review.comment)}</div>` : ''}<div class="tagline">${review?.favorite ? '<span class="tag loved">♥ 我的最爱</span>' : ''}${review?.would_return ? '<span class="tag return">想二刷</span>' : ''}</div></div>`;
   }).join('') : '<p class="help-text">还没去过，先记录预算和期待。吃过后再留下评分。</p>';
   $('#detailBody').innerHTML = `<div class="detail-cover">${photoHTML(firstPhoto(id), r.name)}</div><h2 class="detail-title">${esc(r.name)}</h2><p class="detail-meta">${esc([r.city, r.category, r.address, r.visit_date ? `用餐 ${r.visit_date}` : ''].filter(Boolean).join(' · ') || '还没有补充地址')}</p><p class="help-text">上传于 ${esc(r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '未记录时间')}</p>${metricHTML(s, r.price_per_person, r.status === 'wishlist')}<div class="compare">${cards}</div><p class="help-text">${r.status === 'eaten' ? '分项为已填写分数的平均值；每人的评价独立保存，双方评完后共同入榜。' : '预算仅供挑选餐厅参考，不计入实付统计。'}</p>${photos.length ? `<div class="section-head"><h2>这一顿的照片 <small>${photos.length}</small></h2></div><div class="photo-wall">${photos.map(p => photoHTML(p, `${r.name} · ${ownerName(p.user_id)}`)).join('')}</div>` : ''}<button type="button" class="save-btn" style="margin-top:18px" data-edit="${esc(id)}">${r.status === 'wishlist' ? '编辑 / 我们吃过了' : '编辑记录 / 写我的评价'}</button><button type="button" class="delete-record" data-delete="${esc(id)}">删除这条记录</button><p class="help-text">空间中的两人都可以删除；可到“我们 → 回收站”恢复。</p>`;
+  $('#detailBody [data-edit]').insertAdjacentHTML('beforebegin', `<div class="detail-visits"><p class="help-text">${esc(visitLabel(state, r))} · 同一家店的每次打卡独立保存。</p>${visitHistoryHTML(visitsFor(state, r), id)}<button type="button" class="secondary repeat-visit" data-repeat="${esc(id)}">${r.status === 'wishlist' ? '去打卡，写下这一顿' : '＋ 再来一次，新增打卡'}</button></div>`);
+  $('#detailBody [data-delete]').nextElementSibling.textContent = '只删除这一顿，不影响同店其他打卡。可到“我们 → 回收站”恢复。';
+  restoreHistories('#detailBody', openedHistory);
 }
 async function setRecordDeleted(id, deleted, button) {
   const row = (deleted ? state.restaurants : state.trash).find(r => r.id === id);
@@ -210,27 +229,56 @@ async function retryPhoto() {
   if (!fresh.url) toast('照片文件暂时无法读取。可在编辑记录中移除失效照片，再添加原图');
 }
 
-function openEditor(id = null, status = 'eaten') {
+function openEditor(id = null, status = 'eaten', repeatId = null) {
   if (mode === 'loading') return toast('档案仍在加载，请稍候');
   if (mode === 'cloud' && (!state.space || syncStatus !== 'ready')) {
     toast(state.space ? '请先刷新并恢复云同步' : '先加入情侣空间，再添加共同记录'); openSheet('coupleSheet'); return;
   }
   if (editor) discardEditor();
   const r = id ? state.restaurants.find(x => x.id === id) : null, rv = r ? myReview(id) : null;
+  const source = repeatId ? state.restaurants.find(x => x.id === repeatId) : null, place = r || source;
   editor = { id: r?.id || crypto.randomUUID(), ownerId: selfId(), original: r ? structuredClone(r) : null, status: r?.status || status, added: [], removed: new Set(), dirty: false, scope: `${mode}:${selfId()}:${state.space?.id || ''}` };
-  $('#editId').value = editor.id; $('#editTitle').textContent = r ? '编辑记录 / 我的评价' : status === 'wishlist' ? '加入想吃清单' : '记下这一顿';
-  $('#editSub').textContent = r ? '餐厅信息两人共享；这里只编辑你自己的评价。' : mode === 'cloud' ? '保存后，另一半也能看到这家餐厅。' : '当前记录保存在本机，暂不同步到另一台设备。';
-  $('#restaurantName').value = r?.name || ''; $('#city').value = r?.city || ''; $('#category').value = r?.category || '其他';
+  editor.placeId = place?.place_id || place?.id || editor.id; editor.createPlace = !place; editor.newPlaceId = place ? crypto.randomUUID() : editor.id;
+  const groups = groupRestaurants(state);
+  $('#recordPlace').innerHTML = '<option value="new">＋ 新店 / 作为独立店铺</option>' + groups.map(g => `<option value="${esc(g.latest.place_id || g.latest.id)}">${esc([g.latest.name, g.latest.city, g.latest.address].filter(Boolean).join(' · '))}（${g.visits.filter(v => v.status === 'eaten').length} 次打卡）</option>`).join('');
+  $('#recordPlace').value = place ? editor.placeId : 'new';
+  $('#editId').value = editor.id; $('#editTitle').textContent = r ? '编辑这次打卡 / 我的评价' : source ? '再来一次 · 新打卡' : status === 'wishlist' ? '加入想吃清单' : '记下这一顿';
+  $('#editSub').textContent = r ? '只修改这一顿；选择已有店铺可以调整归属，不会覆盖其他打卡。' : source ? '沿用店铺信息，日期、人均、评分和照片重新记录。' : mode === 'cloud' ? '选已有店铺可新增打卡；给另一半的同一顿补评价，请打开那条记录。' : '当前记录保存在本机，暂不同步到另一台设备。';
+  $('#restaurantName').value = place?.name || ''; $('#city').value = place?.city || ''; $('#category').value = place?.category || '其他';
   renderCategories();
-  $('#address').value = r?.address || ''; $('#visitDate').value = r ? r.visit_date || '' : status === 'eaten' ? todayLocal() : '';
+  $('#address').value = place?.address || ''; $('#visitDate').value = r ? r.visit_date || '' : status === 'eaten' ? todayLocal() : '';
   $('#price').value = r?.price_per_person ?? ''; $('#tags').value = (r?.tags || []).join('，');
   $('#favoriteDish').value = rv?.favorite_dish || ''; $('#reviewText').value = rv?.comment || '';
   $('#favoriteToggle').classList.toggle('on', !!rv?.favorite); $('#againToggle').classList.toggle('on', !!rv?.would_return);
   const rateRow = ([key, label]) => `<div class="rate-row"><label for="rate-${key}">${label}</label><input id="rate-${key}" type="range" min="0" max="10" step="0.5" value="${rating(rv?.[key]) ?? 0}" data-rate="${key}" aria-label="${label}评分"><output data-rate-value="${key}">${formatScore(rating(rv?.[key]))}</output></div>`;
   $('#rateRows').innerHTML = CORE_DIMS.map(rateRow).join(''); $('#extraRateRows').innerHTML = EXTRA_DIMS.map(rateRow).join('');
-  setStatus(editor.status, false); updateOverall(); renderEditorPhotos(); $('#photoStatus').textContent = ''; showFormMessage();
+  setStatus(editor.status, false); updateOverall(); renderEditorPhotos(); updatePlaceHint(); $('#photoStatus').textContent = ''; showFormMessage();
   $('#saveRecordBtn').textContent = mode === 'cloud' ? '保存到我们的档案' : '保存到本机档案';
   openSheet('editSheet'); $('#editSheet .sheet').scrollTop = 0;
+}
+function beginRepeat(id) {
+  const row = state.restaurants.find(r => r.id === id); if (!row) return;
+  closeSheet('detailSheet', true);
+  if (row.status === 'wishlist') { openEditor(id); setStatus('eaten'); $('#visitDate').value = todayLocal(); updatePlaceHint(); }
+  else openEditor(null, 'eaten', id);
+}
+function selectPlace() {
+  if (!editor) return;
+  const selected = $('#recordPlace').value;
+  editor.placeId = selected === 'new' ? editor.newPlaceId : selected; editor.createPlace = selected === 'new'; editor.dirty = true;
+  const source = sortRestaurants(state.restaurants.filter(r => (r.place_id || r.id) === selected), state, 'visit')[0];
+  if (source && !editor.original) {
+    $('#restaurantName').value = source.name; $('#city').value = source.city || ''; $('#address').value = source.address || ''; $('#category').value = source.category || '其他';
+  }
+  updatePlaceHint();
+}
+function updatePlaceHint() {
+  if (!editor) return;
+  $('#placeHint').textContent = editor.createPlace ? '这次会建立独立的店铺档案。同品牌的不同分店请分别建店。' : editor.original ? '仅调整这一顿的店铺归属和内容；其他打卡的照片、评价不改变。' : '本次归入已有店铺，旧打卡保留；请填写这次的人均、评价和照片。';
+  const sameDate = !editor.original && !editor.createPlace && state.restaurants.find(r => r.status === 'eaten' && (r.place_id || r.id) === editor.placeId && r.visit_date && r.visit_date === $('#visitDate').value);
+  const similar = editor.createPlace && state.restaurants.some(r => r.id !== editor.id && r.name.trim().toLowerCase() === $('#restaurantName').value.trim().toLowerCase());
+  $('#placeSuggestion').classList.toggle('hidden', !sameDate && !similar);
+  $('#placeSuggestion').innerHTML = sameDate ? `这家店这一天已有打卡。如果是同一顿，请打开原记录补评价；不同顿可以继续保存。<button type="button" class="text-btn" data-existing-visit="${esc(sameDate.id)}">打开当天已有打卡 ›</button>` : similar ? '发现同名店铺：如果是同一家分店，请在上方选择已有店铺，避免建立重复档案。' : '';
 }
 function setStatus(status, markDirty = true) {
   if (!editor) return;
@@ -254,7 +302,7 @@ function renderEditorPhotos() {
 async function addPhotos(files) {
   if (!editor || photosBusy || saving) return;
   const draft = editor, capacity = Math.max(0, MAX_PHOTOS - existingEditorPhotos().filter(p => p.user_id === selfId()).length - editor.added.length);
-  if (!capacity) return toast(`每人每家最多 ${MAX_PHOTOS} 张照片，先移除几张再添加`);
+  if (!capacity) return toast(`每人每次打卡最多 ${MAX_PHOTOS} 张照片，先移除几张再添加`);
   photosBusy = true; $('#saveRecordBtn').disabled = true; $('#photoInput').disabled = true;
   const selected = [...files].slice(0, capacity), errors = [];
   for (let i = 0; i < selected.length; i++) {
@@ -271,9 +319,9 @@ async function addPhotos(files) {
   $('#photoStatus').textContent = errors.length ? errors.join('；') : `${draft.added.length} 张新照片已就绪，点击底部保存。${files.length > capacity ? `最多还能添加 ${capacity} 张，本次其余照片未添加。` : ''}`;
 }
 function collectDraft() {
-  if (existingEditorPhotos().filter(p => p.user_id === selfId()).length + editor.added.length > MAX_PHOTOS) throw new Error(`每人每家最多 ${MAX_PHOTOS} 张照片，请移除多出的照片`);
+  if (existingEditorPhotos().filter(p => p.user_id === selfId()).length + editor.added.length > MAX_PHOTOS) throw new Error(`每人每次打卡最多 ${MAX_PHOTOS} 张照片，请移除多出的照片`);
   if (state.trash.some(r => r.id === editor.id)) throw new Error('记录已删除，请先从回收站恢复');
-  const restaurant = validateRestaurant({ id: editor.id, space_id: state.space?.id || 'local-space', name: $('#restaurantName').value.trim(), city: $('#city').value.trim(), category: $('#category').value.trim() || '其他', address: $('#address').value.trim(), visit_date: $('#visitDate').value || null, price_per_person: $('#price').value.trim() === '' ? null : Number($('#price').value), tags: [...new Set($('#tags').value.split(/[，,]/).map(s => s.trim()).filter(Boolean))].slice(0, 20), status: editor.status });
+  const restaurant = validateRestaurant({ id: editor.id, place_id: editor.placeId, create_place: editor.createPlace, space_id: state.space?.id || 'local-space', name: $('#restaurantName').value.trim(), city: $('#city').value.trim(), category: $('#category').value.trim() || '其他', address: $('#address').value.trim(), visit_date: $('#visitDate').value || null, price_per_person: $('#price').value.trim() === '' ? null : Number($('#price').value), tags: [...new Set($('#tags').value.split(/[，,]/).map(s => s.trim()).filter(Boolean))].slice(0, 20), status: editor.status });
   const review = editor.status === 'eaten' ? { ...Object.fromEntries(DIMS.map(([key]) => [key, rating($(`[data-rate="${key}"]`).value)])), favorite_dish: $('#favoriteDish').value.trim(), comment: $('#reviewText').value.trim(), favorite: $('#favoriteToggle').classList.contains('on'), would_return: $('#againToggle').classList.contains('on') } : null;
   const hasReview = review && (myReview(editor.id) || DIMS.some(([key]) => review[key] !== null) || review.favorite_dish || review.comment || review.favorite || review.would_return);
   return { restaurant, review: hasReview ? review : null, added: editor.added, removed: [...editor.removed], expected: editor.original?.updated_at };
@@ -283,6 +331,7 @@ async function saveRecord(event) {
   if (editor.scope !== `${mode}:${selfId()}:${state.space?.id || ''}`) return showFormMessage('登录状态已变化，请重新打开记录再保存');
   if (mode === 'cloud' && !navigator.onLine) return showFormMessage('当前离线，内容仍保留。恢复网络后再保存');
   let draft; try { draft = collectDraft(); } catch (error) { showFormMessage(friendly(error)); return; }
+  if (editor.original && (editor.original.place_id || editor.original.id) !== draft.restaurant.place_id && !window.confirm('确定调整这一次打卡的店铺归属？\n只移动这一顿，双方评价与照片保留，不修改其他打卡。')) return;
   saving = true; showFormMessage(); $$('#recordForm input, #recordForm button, #recordForm textarea, #recordForm select').forEach(el => el.disabled = true);
   const epoch = authEpoch, saveMode = mode, updateProgress = text => $('#saveRecordBtn').textContent = text;
   try {
@@ -294,7 +343,9 @@ async function saveRecord(event) {
         if (data.trash.some(r => r.id === draft.restaurant.id)) throw new Error('记录已删除，请先从回收站恢复');
         const current = data.restaurants.find(r => r.id === draft.restaurant.id);
         if (current && current.updated_at !== draft.expected) throw new Error('记录刚刚被修改，请重新打开后再保存');
+        if (!draft.restaurant.create_place && ![...data.restaurants, ...data.trash].some(r => (r.place_id || r.id) === draft.restaurant.place_id)) throw new Error('店铺不存在，请重新选择');
         const now = new Date().toISOString(), r = { ...draft.restaurant, created_at: current?.created_at || now, updated_at: now };
+        delete r.create_place;
         const reviewId = data.reviews.find(x => x.restaurant_id === r.id && x.user_id === 'local-me')?.id;
         data.restaurants = [r, ...data.restaurants.filter(x => x.id !== r.id)];
         if (draft.review) data.reviews = [...data.reviews.filter(x => !(x.restaurant_id === r.id && x.user_id === 'local-me')), { ...draft.review, id: reviewId || crypto.randomUUID(), restaurant_id: r.id, space_id: 'local-space', user_id: 'local-me', updated_at: now }];
@@ -349,8 +400,11 @@ function subscribeRealtime() {
   if (realtimeChannel) client.removeChannel(realtimeChannel);
   subscribedSpace = state.space.id;
   realtimeChannel = client.channel(`food-map-${subscribedSpace}`);
+  const epoch = authEpoch;
   for (const table of ['restaurants', 'reviews', 'food_photos', 'space_members']) realtimeChannel.on('postgres_changes', { event: '*', schema: 'public', table, filter: `space_id=eq.${subscribedSpace}` }, scheduleSync);
-  realtimeChannel.subscribe(status => { if (status === 'SUBSCRIBED') scheduleSync(); });
+  // Joining the socket precedes the Postgres listener becoming ready. Refetch across that gap.
+  realtimeChannel.on('system', {}, () => { if (epoch === authEpoch) scheduleSync(); });
+  realtimeChannel.subscribe(status => { if (epoch === authEpoch && ['SUBSCRIBED', 'CHANNEL_ERROR', 'TIMED_OUT'].includes(status)) scheduleSync(); });
 }
 async function initCloud() {
   try {
@@ -457,7 +511,7 @@ async function importBackup(file) {
   } catch (error) { toast(friendly(error), 6500); } finally { $('#importInput').value = ''; }
 }
 function randomPick() {
-  const candidates = state.restaurants.filter(r => r.status === 'wishlist' || summary(state, r).wouldReturn);
+  const candidates = groupRestaurants(state, state.restaurants.filter(r => r.status === 'wishlist' || summary(state, r).wouldReturn)).map(g => g.latest);
   if (!candidates.length) return toast('先加几家想吃或想二刷的店');
   const restaurant = candidates[Math.floor(Math.random() * candidates.length)]; showDetail(restaurant.id); toast(`这次去：${restaurant.name}`);
 }
@@ -477,6 +531,12 @@ document.addEventListener('click', event => {
   const target = event.target.closest('button, [data-open], [data-close], [data-filter-go], [data-go]'); if (!target || target.disabled) return;
   if (target.dataset.photo) return showGallery(target.dataset.photo);
   if (target.dataset.detail) return showDetail(target.dataset.detail);
+  if (target.dataset.repeat) return beginRepeat(target.dataset.repeat);
+  if (target.dataset.existingVisit) {
+    if (editor?.dirty && !window.confirm('放弃当前未保存的内容，打开已有打卡？')) return;
+    discardEditor(); closeSheet('editSheet', true); return showDetail(target.dataset.existingVisit);
+  }
+  if (target.dataset.recordView) { recordView = target.dataset.recordView; return renderRecords(); }
   if (target.dataset.delete) return setRecordDeleted(target.dataset.delete, true, target);
   if (target.dataset.restore) return setRecordDeleted(target.dataset.restore, false, target);
   if (target.dataset.edit) { const id = target.dataset.edit; closeSheet('detailSheet'); return openEditor(id); }
@@ -513,9 +573,11 @@ $$('.setting-row[data-open]').forEach(row => { row.setAttribute('role', 'button'
 $$('.sheet-wrap').forEach(wrap => wrap.addEventListener('click', event => { if (event.target === wrap) closeSheet(wrap.id); }));
 $('#mainAdd').onclick = () => openEditor(); $('#syncBtn').onclick = () => openSheet('cloudSheet'); $('#refreshBtn').onclick = refreshManual;
 $('#searchInput').oninput = renderRecords; $('#recordSort').onchange = renderRecords;
+$('#recordPlace').onchange = selectPlace;
 $('#recordForm').onsubmit = saveRecord;
 $('#recordForm').addEventListener('input', event => {
   if (!editor) return; editor.dirty = true;
+  if (['restaurantName', 'visitDate'].includes(event.target.id)) updatePlaceHint();
   if (event.target.dataset.rate) { const input = event.target; if (Number(input.value) > 0 && Number(input.value) < 1) input.value = 1; $(`[data-rate-value="${input.dataset.rate}"]`).textContent = formatScore(rating(input.value)); updateOverall(); }
 });
 $('#photoInput').onchange = event => addPhotos(event.target.files);
@@ -530,7 +592,8 @@ $('#previousPhoto').onclick = () => { galleryIndex--; renderGallery(); }; $('#ne
 window.addEventListener('beforeunload', event => { if (saving || photosBusy || editor?.dirty) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('online', () => { renderHeader(); if (user) scheduleSync(); }); window.addEventListener('offline', renderHeader);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && user && navigator.onLine) scheduleSync(); });
-setInterval(() => { if (!document.hidden && user && navigator.onLine) scheduleSync(); }, 60000);
+// Keep visible pages current even if the WebSocket silently misses an event or reconnects.
+setInterval(() => { if (!document.hidden && user && navigator.onLine) scheduleSync(); }, 20000);
 setInterval(updateCooldown, 1000);
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); deferredInstallPrompt = event; updateInstallUI(); });
 window.addEventListener('appinstalled', () => { deferredInstallPrompt = null; updateInstallUI(); toast('已添加到手机桌面'); });

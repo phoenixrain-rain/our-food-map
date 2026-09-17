@@ -22,7 +22,7 @@ let browser, server;
 const clients = [], sessions = [];
 const resourceFile = `.private-audit/cloud-resources-${run}.json`;
 await mkdir('.private-audit', { recursive: true });
-const counts = async () => Object.fromEntries(await Promise.all(['spaces', 'space_members', 'restaurants', 'reviews', 'food_photos'].map(async name => {
+const counts = async () => Object.fromEntries(await Promise.all(['spaces', 'space_members', 'food_places', 'restaurants', 'reviews', 'food_photos'].map(async name => {
   const { count, error } = await admin.from(name).select('id', { count: 'exact', head: true });
   // space_members has a composite primary key.
   if (error && name === 'space_members') { const r = await admin.from(name).select('user_id', { count: 'exact', head: true }); if (r.error) throw r.error; return [name, r.count]; }
@@ -74,6 +74,8 @@ try {
   const aReview = { taste: 9, value: 8, vibe: 7, service: null, look: null, comment: '味道很好，下次还想来。', favorite_dish: '锅包肉', favorite: true, would_return: true };
   const args = { p_restaurant: restaurant, p_review: aReview, p_photo_paths: [path] };
   let result = check(await a.rpc('save_food_record', args), 'save atomic record');
+  assert.equal(result.restaurant.place_id, id, 'old clients receive a stable place identity');
+  assert.equal(check(await outsider.from('food_places').select('id').eq('space_id', space.id), 'private place identities').length, 0);
   const originalVersion = result.restaurant.updated_at;
   check(await a.rpc('save_food_record', args), 'retry same save');
   assert.equal(check(await a.from('restaurants').select('id').eq('id', id), 'count restaurants').length, 1);
@@ -91,6 +93,7 @@ try {
   const badId = randomUUID();
   const bad = await a.rpc('save_food_record', { p_restaurant: { ...restaurant, id: badId }, p_photo_paths: [`${space.id}/${badId}/${resources.users[0]}/missing.jpg`] });
   assert.ok(bad.error); assert.equal(check(await a.from('restaurants').select('id').eq('id', badId), 'rollback check').length, 0);
+  assert.equal(check(await a.from('food_places').select('id').eq('id', badId), 'place creation rollback').length, 0);
   result = check(await b.rpc('save_food_record', { p_restaurant: { ...restaurant, address: '另一半更新的地址' }, p_expected_updated_at: originalVersion }), 'concurrent edit first writer');
   const stale = await a.rpc('save_food_record', { p_restaurant: { ...restaurant, name: '过期的编辑' }, p_expected_updated_at: originalVersion });
   assert.ok(stale.error?.message.includes('修改'));
@@ -107,7 +110,17 @@ try {
   const contextB = await browser.newContext({ viewport: { width: 393, height: 851 }, isMobile: true, hasTouch: true });
   for (const [i, context] of [contextA, contextB].entries()) await context.addInitScript(({ key, session }) => { if (!localStorage.getItem('test-auth-seeded')) { localStorage.setItem(key, JSON.stringify(session)); localStorage.setItem('test-auth-seeded', 'yes'); } }, { key: `sb-${project}-auth-token`, session: sessions[i] });
   const pageA = await contextA.newPage(), pageB = await contextB.newPage(), browserErrors = [];
-  for (const page of [pageA, pageB]) page.on('pageerror', error => browserErrors.push(error.message));
+  const realtimeEvents = { changes: 0, ready: 0, errors: 0 };
+  for (const page of [pageA, pageB]) {
+    page.on('pageerror', error => browserErrors.push(error.message));
+    page.on('websocket', socket => socket.on('framereceived', frame => {
+      try { const message = JSON.parse(String(frame.payload)), event = message.event || message[3], payload = message.payload || message[4];
+        if (event === 'postgres_changes') realtimeEvents.changes++;
+        if (event === 'system' && payload?.status === 'ok') realtimeEvents.ready++;
+        if (event === 'system' && payload?.status === 'error') realtimeEvents.errors++;
+      } catch { /* No credentials or payloads are logged. */ }
+    }));
+  }
   await Promise.all([pageA.goto('http://127.0.0.1:4173'), pageB.goto('http://127.0.0.1:4173')]);
   await expect(pageA.locator('#helloLine')).toContainText('已同步', { timeout: 30000 });
   await expect(pageB.locator('#helloLine')).toContainText('已同步', { timeout: 30000 });
@@ -182,6 +195,47 @@ try {
   assert.equal((await fetch(check(await b.storage.from('food-photos').createSignedUrl(bPath, 60), 'restored photo readable').signedUrl)).status, 200);
   await expect(pageA.locator('#homeCards .food-title').first()).toHaveText('双人同步甜品店');
   console.log('PASS cloud delete failure/retry, partner realtime removal/restore, stale edit protection, trash permissions, intact photos/reviews and ranking order');
+  await pageA.locator('#rankList .food-content').click(); await pageA.locator('#detailBody [data-repeat]').click(); await expect(pageA.locator('#recordPlace')).toHaveValue(id); await expect(pageA.locator('#overallScore')).toHaveText('未评'); await expect(pageA.locator('#photoPreviews .preview')).toHaveCount(0);
+  await pageA.locator('#visitDate').fill('2026-09-18'); await pageA.locator('#price').fill('99');
+  for (const key of ['taste', 'value', 'vibe']) await pageA.locator(`[data-rate="${key}"]`).evaluate(el => { el.value = 4; el.dispatchEvent(new Event('input', { bubbles: true })); });
+  await pageA.locator('#photoInput').setInputFiles({ name: 'revisit.jpg', mimeType: 'image/jpeg', buffer: jpeg }); await expect(pageA.locator('#photoStatus')).toContainText('已就绪'); await pageA.locator('#saveRecordBtn').click(); await expect(pageA.locator('#editSheet')).not.toHaveClass(/open/, { timeout: 30000 });
+  const revisited = check(await a.from('restaurants').select('*').eq('space_id', space.id).eq('place_id', id).neq('id', id).single(), 'second visit linked to same place');
+  assert.equal(check(await a.from('food_places').select('id').eq('space_id', space.id), 'count distinct places').length, 2);
+  await expect(pageA.locator('#rankList .food-card')).toHaveCount(1); await expect(pageA.locator('#rankList .metric.value')).toContainText('8.5');
+  await pageA.locator('[data-nav="records"]').click(); await pageA.locator('#recordSort').selectOption('visit'); await expect(pageA.locator('#recordList .food-card')).toHaveCount(2); await expect(pageA.locator('#resultsCount')).toHaveText('2 家店 · 3 条记录');
+  await expect(pageA.locator('#recordList .food-card').first()).toHaveAttribute('data-record', revisited.id); await expect.poll(() => pageA.locator(`#recordList [data-record="${revisited.id}"] .food-photo img`).evaluate(img => img.naturalWidth), { timeout: 15000 }).toBeGreaterThan(0);
+  await pageA.locator(`#recordList [data-place="${id}"] summary`).click(); await expect(pageA.locator(`#recordList [data-place="${id}"] .visit-row`)).toHaveCount(2); await pageA.locator('#recordList .visit-row').last().scrollIntoViewIfNeeded(); await pageA.screenshot({ path: '.private-audit/mobile-visits.png' });
+  await pageB.locator('[data-close="trashSheet"]').click(); await pageB.locator('[data-nav="home"]').click(); await expect(pageB.locator(`#homeCards [data-record="${revisited.id}"]`)).toHaveCount(1, { timeout: 30000 });
+  await pageB.locator(`#homeCards [data-record="${revisited.id}"] .food-content`).click(); await pageB.locator('#detailBody [data-edit]').click(); await expect(pageB.locator('#overallScore')).toHaveText('未评');
+  for (const key of ['taste', 'value', 'vibe']) await pageB.locator(`[data-rate="${key}"]`).evaluate(el => { el.value = 6; el.dispatchEvent(new Event('input', { bubbles: true })); });
+  await pageB.locator('#saveRecordBtn').click(); await expect(pageB.locator('#editSheet')).not.toHaveClass(/open/, { timeout: 30000 });
+  await expect(pageA.locator('#rankList .food-card')).toHaveAttribute('data-record', revisited.id, { timeout: 30000 }); await expect(pageA.locator('#rankList .metric.value')).toContainText('5.0');
+  assert.deepEqual(check(await a.from('food_photos').select('id,path').eq('restaurant_id', id).order('id'), 'prior visit photos remain independent'), photosBeforeTrash);
+  assert.equal(check(await a.from('reviews').select('taste').eq('restaurant_id', id).eq('user_id', resources.users[0]).single(), 'prior visit rating unchanged').taste, 9);
+  // Moving a visit does not merge reviews or affect the other visits. A stale move is rejected.
+  const detachedPlace = randomUUID();
+  const detached = check(await a.rpc('save_food_record', { p_restaurant: { ...revisited, place_id: detachedPlace, create_place: true }, p_expected_updated_at: revisited.updated_at }), 'detach visit into separate place').restaurant;
+  assert.ok((await b.rpc('save_food_record', { p_restaurant: { ...revisited, address: 'stale move' }, p_expected_updated_at: revisited.updated_at })).error?.message.includes('修改'));
+  check(await a.rpc('save_food_record', { p_restaurant: { ...detached, place_id: id }, p_expected_updated_at: detached.updated_at }), 'relink existing visit');
+  assert.equal(check(await a.from('reviews').select('id').eq('restaurant_id', revisited.id), 'review count after relink').length, 2);
+  assert.ok((await outsider.from('restaurants').insert({ ...restaurant, id: randomUUID(), place_id: id, created_by: resources.users[2] })).error, 'cross-space visit insertion denied');
+  assert.ok((await a.rpc('save_food_record', { p_restaurant: { ...restaurant, id: randomUUID(), place_id: randomUUID() } })).error, 'nonexistent place link denied');
+  const otherSpace = check(await outsider.rpc('create_space', { p_name: marker, p_nickname: '隔离账号' }), 'second isolated space'); resources.spaces.push({ id: otherSpace.id, name: marker }); await recordResources();
+  assert.ok((await outsider.rpc('save_food_record', { p_restaurant: { ...restaurant, id: randomUUID(), space_id: otherSpace.id, place_id: id } })).error, 'member of another space cannot attach its visit to private place');
+  const lastVisit = check(await a.from('restaurants').select('*').eq('id', revisited.id).single(), 'current revisit');
+  const deletedVisit = check(await a.rpc('set_food_record_deleted', { p_id: revisited.id, p_deleted: true, p_expected_updated_at: lastVisit.updated_at }), 'delete only revisit');
+  await expect(pageA.locator('#rankList .food-card')).toHaveAttribute('data-record', id, { timeout: 30000 });
+  check(await a.rpc('set_food_record_deleted', { p_id: revisited.id, p_deleted: false, p_expected_updated_at: deletedVisit.updated_at }), 'restore same place revisit');
+  await expect(pageA.locator('#rankList .food-card')).toHaveAttribute('data-record', revisited.id, { timeout: 30000 });
+  console.log('PASS same-place revisits, chronological grouped history, independent photos/reviews, single-slot latest joint ranking, relink/detach, stale move protection and restore');
+  console.log(`Realtime diagnostic counts: ${JSON.stringify(realtimeEvents)}`);
+  const silentContext = await browser.newContext({ viewport: { width: 393, height: 851 }, isMobile: true, hasTouch: true });
+  await silentContext.routeWebSocket('**/realtime/v1/**', socket => socket.onMessage(() => {}));
+  await silentContext.addInitScript(({ key, session }) => localStorage.setItem(key, JSON.stringify(session)), { key: `sb-${project}-auth-token`, session: sessions[0] });
+  const silentPage = await silentContext.newPage(); await silentPage.goto('http://127.0.0.1:4173'); await expect(silentPage.locator('#helloLine')).toContainText('已同步', { timeout: 30000 });
+  check(await b.from('space_members').update({ nickname: '小晴自动同步检查' }).eq('user_id', resources.users[1]).eq('space_id', space.id), 'change synthetic nickname while websocket is silent');
+  await expect(silentPage.locator('#heroMembers')).toContainText('小晴自动同步检查', { timeout: 30000 }); await silentContext.close();
+  console.log('PASS automatic refetch fallback with all Realtime WebSocket messages suppressed');
   await pageA.locator('[data-nav="profile"]').click(); await pageA.locator('[data-open="cloud"]').click(); await pageA.locator('#logoutBtn').click(); await expect(pageA.locator('#helloLine')).toContainText('本机档案', { timeout: 20000 });
   await expect(pageA.locator('#homeCards .food-card')).toHaveCount(0); assert.deepEqual(browserErrors, []);
   console.log('PASS real two-browser sync, member list, missing-photo fallback, failed upload retry, mobile UI and logout isolation');

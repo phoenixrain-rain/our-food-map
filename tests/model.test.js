@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyData, rating, reviewScore, summary, tasteMatch, filterRestaurants, sortRestaurants, rankedRestaurants, formatPrice, todayLocal, validateBackup, safeImageURL } from '../lib/model.js';
+import { emptyData, rating, reviewScore, summary, tasteMatch, filterRestaurants, sortRestaurants, rankedRestaurants, formatPrice, todayLocal, validateBackup, safeImageURL, groupRestaurants, visitsFor, visitLabel } from '../lib/model.js';
 const restaurant = (id, price = null, status = 'eaten') => ({ id, name: id, status, price_per_person: price, created_at: '2026-09-16' });
 test('unrated and partial ratings never become automatic 8s or zeros', () => {
   assert.equal(rating(null), null); assert.equal(rating(''), null); assert.equal(rating(false), null); assert.equal(rating(0), null); assert.equal(rating(11), null);
@@ -79,4 +79,48 @@ test('trash backup retains both reviews and photos without restoring into active
   assert.equal(imported.restaurants.length, 0); assert.equal(imported.trash.length, 1);
   assert.equal(imported.reviews.length, 2); assert.equal(imported.photos[0].url, data.photos[0].url);
   data.trash[0].deleted_at = ''; assert.throws(() => validateBackup(data), /删除时间/);
+});
+
+test('dining-date ordering puts missing dates last and breaks same-day ties by upload', () => {
+  const rows = [
+    { ...restaurant('undated'), created_at: '2026-09-30' },
+    { ...restaurant('backfill'), visit_date: '2026-01-01', created_at: '2026-09-30' },
+    { ...restaurant('today'), visit_date: '2026-09-17', created_at: '2026-09-17T01:00:00Z' },
+    { ...restaurant('today-later'), visit_date: '2026-09-17', created_at: '2026-09-17T02:00:00Z' }
+  ];
+  assert.deepEqual(sortRestaurants(rows, emptyData(), 'visit').map(r => r.id), ['today-later', 'today', 'backfill', 'undated']);
+});
+
+test('stable place IDs group visits, never names or branches, and survive deleting the first visit', () => {
+  const data = { ...emptyData(), restaurants: [
+    { ...restaurant('first'), place_id: 'place', name: '同名店', visit_date: '2026-09-01' },
+    { ...restaurant('second'), place_id: 'place', name: '改过名字', visit_date: '2026-09-10' },
+    { ...restaurant('branch'), name: '同名店', visit_date: '2026-09-02' }
+  ] };
+  assert.equal(groupRestaurants(data).length, 2); assert.equal(visitsFor(data, data.restaurants[0]).length, 2);
+  assert.equal(visitLabel(data, data.restaurants[1]), '第 2 次打卡');
+  data.trash.push({ ...data.restaurants.shift(), deleted_at: '2026-09-17' });
+  assert.equal(groupRestaurants(data).length, 2); assert.equal(visitsFor(data, data.restaurants[0]).length, 1);
+  data.restaurants.push({ ...data.trash[0], deleted_at: null }); assert.equal(groupRestaurants(data).length, 2);
+});
+
+test('place rank uses latest jointly completed visit, not best score or unfinished revisit', () => {
+  const data = { ...emptyData(), restaurants: ['first', 'second', 'third'].map((id, i) => ({ ...restaurant(id, i === 1 ? null : 40), place_id: 'one', visit_date: `2026-09-0${i + 1}` })),
+    reviews: ['first', 'second', 'third'].flatMap((restaurant_id, i) => (i === 2 ? ['a'] : ['a', 'b']).map(user_id => ({ restaurant_id, user_id, taste: 9 - i * 2, value: 9 - i * 2, vibe: 9 - i * 2 }))) };
+  assert.deepEqual(rankedRestaurants(data).map(r => r.id), ['second']);
+  assert.equal(rankedRestaurants(data, 'price').length, 0, 'do not silently substitute an older price');
+  data.reviews.push({ restaurant_id: 'third', user_id: 'b', taste: 5, value: 5, vibe: 5 });
+  assert.deepEqual(rankedRestaurants(data).map(r => r.id), ['third']);
+  data.restaurants[2].deleted_at = '2026-09-17'; assert.deepEqual(rankedRestaurants(data).map(r => r.id), ['second']);
+});
+
+test('future plans do not replace a completed visit in the default place card', () => {
+  const data = { ...emptyData(), restaurants: [{ ...restaurant('eaten'), place_id: 'one', visit_date: '2026-09-01' }, { ...restaurant('plan', 50, 'wishlist'), place_id: 'one', visit_date: '2026-10-01' }] };
+  assert.equal(groupRestaurants(data)[0].latest.id, 'eaten');
+  assert.equal(groupRestaurants(data, filterRestaurants(data, { filter: 'wishlist' }))[0].latest.id, 'plan');
+});
+
+test('backups retain stable place membership across active and trashed visits', () => {
+  const imported = validateBackup({ ...emptyData(), restaurants: [{ ...restaurant('a'), place_id: 'shared-place' }], trash: [{ ...restaurant('b'), place_id: 'shared-place', deleted_at: '2026-09-17' }] });
+  assert.equal(imported.restaurants[0].place_id, 'shared-place'); assert.equal(imported.trash[0].place_id, 'shared-place');
 });
