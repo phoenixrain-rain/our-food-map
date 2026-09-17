@@ -287,8 +287,23 @@ try {
   check(await b.from('space_members').update({ nickname: '小晴自动同步检查' }).eq('user_id', resources.users[1]).eq('space_id', space.id), 'change synthetic nickname while websocket is silent');
   await expect(silentPage.locator('#heroMembers')).toContainText('小晴自动同步检查', { timeout: 30000 }); await silentContext.close();
   console.log('PASS automatic refetch fallback with all Realtime WebSocket messages suppressed');
+  // New read-only discovery views use the same private snapshot and update while open.
+  await pageA.locator('[data-nav="home"]').click(); await pageA.locator('.journal-home').click(); await pageA.locator('#journalMonth').fill('2026-09'); await pageA.locator('#journalMonth').dispatchEvent('change');
+  await expect(pageA.locator('#journalStats b').nth(0)).toHaveText('2'); await expect(pageA.locator('#journalStats b').nth(1)).toHaveText('1');
+  const reportVisit = check(await b.from('restaurants').select('*').eq('id', revisited.id).single(), 'read temporary visit before report change');
+  check(await b.rpc('save_food_record', { p_restaurant: { ...reportVisit, visit_date: '2026-08-18' }, p_expected_updated_at: reportVisit.updated_at }), 'move only temporary visit to prior month');
+  await expect(pageA.locator('#journalStats b').nth(0)).toHaveText('1', { timeout: 30000 }); await expect(pageA.locator('#journalMeals .food-card')).toHaveCount(1);
+  await pageA.locator('[data-close="journalSheet"]').click(); await pageA.locator('[data-quick="random"]').click(); await pageA.locator('#decisionSource').selectOption('all');
+  await expect(pageA.locator('#decisionCount')).toContainText('2 家'); await pageA.locator('#drawDinner').click(); await expect(pageA.locator('#decisionResult [data-detail]')).toBeVisible();
+  await pageA.locator('[data-close="decisionSheet"]').click(); await pageA.locator('[data-nav="records"]').click(); await pageA.locator('#advancedFilters summary').click(); await pageA.locator('#filterCity').selectOption('沈阳'); await pageA.locator('#filterPhotos').check();
+  await expect(pageA.locator('#recordList .food-card')).toHaveCount(1); await pageA.locator('#recordList .food-content').click(); await pageA.locator('#detailBody [data-copy-place]').click();
+  await expect(pageA.locator('#placeCopyText')).toHaveValue(/周末小馆/); assert.ok(!(await pageA.locator('#placeCopyText').inputValue()).includes(space.invite_code));
+  await pageA.locator('[data-close="placeCopySheet"]').click(); await pageA.locator('[data-close="detailSheet"]').click();
+  console.log('PASS private monthly report live changes, per-place dinner choices, city/photo filters and sanitized restaurant copy');
   await pageA.locator('[data-nav="profile"]').click(); await pageA.locator('[data-open="cloud"]').click(); await pageA.locator('#logoutBtn').click(); await expect(pageA.locator('#helloLine')).toContainText('本机档案', { timeout: 20000 });
   await expect(pageA.locator('#homeCards .food-card')).toHaveCount(0); assert.deepEqual(browserErrors, []);
+  for (const selector of ['#journalMeals', '#journalPhotos', '#journalStats', '#decisionResult', '#decisionCount', '#journalPriceNote']) await expect(pageA.locator(selector)).toBeEmpty();
+  await expect(pageA.locator('#filterCity option')).toHaveCount(1); await expect(pageA.locator('#decisionCity option')).toHaveCount(1); await expect(pageA.locator('#placeCopyText')).toHaveValue('');
   await expect(pageA.locator('#faceMe img')).toHaveCount(0); await expect(pageA.locator('#facePartner img')).toHaveCount(0);
   check(await b.rpc('save_member_profile', { p_nickname: '小晴自动同步检查', p_avatar_path: null, p_expected_avatar_path: avatarB, p_expected_nickname: '小晴自动同步检查' }), 'reset partner avatar');
   await expect(pageB.locator('#faceMe img')).toHaveCount(0, { timeout: 30000 });

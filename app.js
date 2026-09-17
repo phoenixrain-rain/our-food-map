@@ -1,10 +1,12 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.3.0';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.3.0';
-import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.3.0';
-import { CloudRepository } from './lib/cloud.js?v=2.3.0';
-import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.3.0';
-import { renderHTML } from './lib/dom.js?v=2.3.0';
-import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.3.0';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.4.0';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.4.0';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.4.0';
+import { CloudRepository } from './lib/cloud.js?v=2.4.0';
+import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.4.0';
+import { renderHTML } from './lib/dom.js?v=2.4.0';
+import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.4.0';
+import { filterRecords } from './lib/discovery.js?v=2.4.0';
+import { DiscoveryUI } from './lib/discovery-ui.js?v=2.4.0';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -45,6 +47,7 @@ function openSheet(id) {
   if (id === 'identitySheet') openIdentity();
   if (id === 'coupleSheet' && user) scheduleSync();
   if (id === 'installSheet') updateInstallUI();
+  if (id === 'journalSheet') discovery.renderJournal();
 }
 function closeSheet(id, force = false) {
   if (id === 'identitySheet' && !force) {
@@ -103,6 +106,7 @@ function cardHTML(r, rank = null, grouped = false) {
   return `<article class="food-card" data-record="${esc(r.id)}" data-place="${esc(r.place_id || r.id)}"><div class="food-card-top"><div class="food-photo">${photoHTML(firstPhoto(r.id), r.name)}${rank !== null ? `<span class="rank-marker">${rank + 1}</span>` : ''}</div><button type="button" class="food-content" data-detail="${esc(r.id)}"><div class="food-line"><h3 class="food-title">${esc(r.name)}</h3><span class="record-state">${r.status === 'wishlist' ? '想吃' : '吃过'}</span></div><div class="food-meta">${esc([r.city, r.category].filter(Boolean).join(' · ') || '未填写位置')}</div>${favoriteDish ? `<div class="dish-line">推荐 ${esc(favoriteDish)}</div>` : `<div class="dish-line subtle">${esc(r.address || '点开记录这一顿')}</div>`}<div class="tagline">${(r.tags || []).slice(0, 2).map(t => `<span class="tag">${esc(t)}</span>`).join('')}${s.bothFavorite ? '<span class="tag loved">♥ 共同最爱</span>' : ''}${s.wouldReturn ? '<span class="tag return">想二刷</span>' : ''}</div></button></div><div class="visit-context">${tierHTML(r)}<span>${esc(visitLabel(state, r))}</span><span>${rank !== null ? '入榜打卡 ' : ''}${esc(r.visit_date || '未填用餐日期')}</span></div><button type="button" class="card-metrics-button" data-detail="${esc(r.id)}">${metricHTML(s, r.price_per_person, r.status === 'wishlist')}</button><div class="card-footer"><span>${reviewText}</span><button type="button" class="text-btn" data-detail="${esc(r.id)}">查看这一顿 ›</button></div>${grouped ? `<div class="place-actions"><span>${rank !== null ? '显示最近一次双方评完的打卡' : '显示最近一次符合筛选的记录'}</span><button type="button" class="text-btn" data-repeat="${esc(r.id)}">＋ 再来一次</button></div>${visitHistoryHTML(visits, r.id)}` : ''}</article>`;
 }
 function render() {
+  discovery.render();
   renderHeader(); renderHome(); renderRecords(); renderRank(); renderProfile(); renderTrash(); renderCategories();
   if (detailId) renderDetail(detailId);
   if (gallery.length && !state.restaurants.some(r => r.id === gallery[galleryIndex]?.restaurant_id)) { gallery = []; $('#photoViewer').classList.add('hidden'); }
@@ -142,7 +146,8 @@ function renderHome() {
   renderHTML($('#storyRow'), photos.map(r => `<button type="button" class="story" data-detail="${esc(r.id)}"><div class="story-ring"><div>${safeImageURL(firstPhoto(r.id)?.url) ? `<img src="${esc(firstPhoto(r.id).url)}" alt="${esc(r.name)}" loading="lazy">` : '🍴'}</div></div><span>${esc(r.name)}</span></button>`).join('') || '<p class="help-text">添加照片后，这里会留下你们的美食相册。</p>');
 }
 function renderRecords() {
-  const matched = filterRestaurants(state, { filter: activeFilter, query: $('#searchInput').value, selfId: selfId() }), groups = groupRestaurants(state, matched);
+  discovery.updateRecordStatus();
+  const matched = filterRecords(state, { filter: activeFilter, query: $('#searchInput').value, selfId: selfId(), ...discovery.recordOptions() }), groups = groupRestaurants(state, matched);
   const sortKey = $('#recordSort').value;
   const rows = sortRestaurants(recordView === 'places' ? groups.map(g => sortKey === 'recent' ? sortRestaurants(g.visits, state, 'recent')[0] : g.latest) : matched, state, sortKey);
   $('#resultsCount').textContent = `${groups.length} 家店 · ${matched.length} 条记录`;
@@ -200,7 +205,7 @@ function renderDetail(id) {
     return `<div class="person-card"><div class="who">${memberAvatar(person, ownerName(person))}<span>${esc(ownerName(person))}</span></div>${CORE_DIMS.map(([key, label]) => `<div class="person-metric"><span>${label}</span><b>${formatScore(rating(review?.[key]))}</b></div>`).join('')}<div class="dimline"><span>综合</span><b>${formatScore(reviewScore(review))}</b></div>${EXTRA_DIMS.filter(([key]) => rating(review?.[key]) !== null).map(([key, label]) => `<div class="dimline"><span>${label}</span><b>${formatScore(review[key])}</b></div>`).join('')}${review?.favorite_dish ? `<div class="quote">推荐菜：${esc(review.favorite_dish)}</div>` : ''}${review?.comment ? `<div class="quote">${esc(review.comment)}</div>` : ''}<div class="tagline">${review?.favorite ? '<span class="tag loved">♥ 我的最爱</span>' : ''}${review?.would_return ? '<span class="tag return">想二刷</span>' : ''}</div></div>`;
   }).join('') : '<p class="help-text">还没去过，先记录预算和期待。吃过后再留下评分。</p>';
   const detailVisits = `<div class="detail-visits">${tierHTML(r, true)}<p class="help-text">${esc(visitLabel(state, r))} · 同一家店的每次打卡独立保存。</p>${visitHistoryHTML(visitsFor(state, r), id)}<button type="button" class="secondary repeat-visit" data-repeat="${esc(id)}">${r.status === 'wishlist' ? '去打卡，写下这一顿' : '＋ 再来一次，新增打卡'}</button></div>`;
-  const detailMarkup = `<div class="detail-cover">${photoHTML(firstPhoto(id), r.name)}</div><h2 class="detail-title">${esc(r.name)}</h2><p class="detail-meta">${esc([r.city, r.category, r.address, r.visit_date ? `用餐 ${r.visit_date}` : ''].filter(Boolean).join(' · ') || '还没有补充地址')}</p><p class="help-text">上传于 ${esc(r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '未记录时间')}</p>${metricHTML(s, r.price_per_person, r.status === 'wishlist')}<div class="compare">${cards}</div><p class="help-text">${r.status === 'eaten' ? '分项为已填写分数的平均值；每人的评价独立保存，双方评完后共同入榜。' : '预算仅供挑选餐厅参考，不计入实付统计。'}</p>${photos.length ? `<div class="section-head"><h2>这一顿的照片 <small>${photos.length}</small></h2></div><div class="photo-wall">${photos.map(p => photoHTML(p, `${r.name} · ${ownerName(p.user_id)}`)).join('')}</div>` : ''}${detailVisits}<button type="button" class="save-btn" style="margin-top:18px" data-edit="${esc(id)}">${r.status === 'wishlist' ? '编辑 / 我们吃过了' : '编辑记录 / 写我的评价'}</button><button type="button" class="delete-record" data-delete="${esc(id)}">删除这条记录</button><p class="help-text">只删除这一顿，不影响同店其他打卡。可到“我们 → 回收站”恢复。</p>`;
+  const detailMarkup = `<div class="detail-cover">${photoHTML(firstPhoto(id), r.name)}</div><h2 class="detail-title">${esc(r.name)}</h2><p class="detail-meta">${esc([r.city, r.category, r.address, r.visit_date ? `用餐 ${r.visit_date}` : ''].filter(Boolean).join(' · ') || '还没有补充地址')}</p><p class="help-text">上传于 ${esc(r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '未记录时间')}</p><button type="button" class="copy-place-btn" data-copy-place="${esc(id)}">复制店名与地址 ↗</button>${metricHTML(s, r.price_per_person, r.status === 'wishlist')}<div class="compare">${cards}</div><p class="help-text">${r.status === 'eaten' ? '分项为已填写分数的平均值；每人的评价独立保存，双方评完后共同入榜。' : '预算仅供挑选餐厅参考，不计入实付统计。'}</p>${photos.length ? `<div class="section-head"><h2>这一顿的照片 <small>${photos.length}</small></h2></div><div class="photo-wall">${photos.map(p => photoHTML(p, `${r.name} · ${ownerName(p.user_id)}`)).join('')}</div>` : ''}${detailVisits}<button type="button" class="save-btn" style="margin-top:18px" data-edit="${esc(id)}">${r.status === 'wishlist' ? '编辑 / 我们吃过了' : '编辑记录 / 写我的评价'}</button><button type="button" class="delete-record" data-delete="${esc(id)}">删除这条记录</button><p class="help-text">只删除这一顿，不影响同店其他打卡。可到“我们 → 回收站”恢复。</p>`;
   renderHTML($('#detailBody'), detailMarkup);
   restoreHistories('#detailBody', openedHistory);
 }
@@ -229,7 +234,7 @@ async function setRecordDeleted(id, deleted, button) {
     toast(deleted ? '已移入回收站，可在“我们 → 回收站”恢复' : '记录已恢复，双方评价和照片仍在');
   }, deleted ? '正在删除…' : '正在恢复…');
 }
-function showDetail(id) { detailId = id; renderDetail(id); openSheet('detailSheet'); }
+function showDetail(id) { closeSheet('decisionSheet', true); closeSheet('journalSheet', true); detailId = id; renderDetail(id); openSheet('detailSheet'); }
 function showGallery(id) {
   const photo = state.photos.find(p => p.id === id); if (!photo) return;
   gallery = state.photos.filter(p => p.restaurant_id === photo.restaurant_id); galleryIndex = gallery.findIndex(p => p.id === id);
@@ -388,6 +393,7 @@ async function changeSession(session) {
   const nextUser = session?.user || null;
   if (sessionKnown && user?.id === nextUser?.id) { if (nextUser) scheduleSync(); return; }
   discardIdentity(); closeSheet('identitySheet', true);
+  discovery.reset(); activeFilter = 'all'; recordView = 'places'; $('#recordSort').value = 'visit';
   sessionKnown = true; authEpoch++; user = nextUser; const epoch = authEpoch;
   if (realtimeChannel) client.removeChannel(realtimeChannel); realtimeChannel = null; subscribedSpace = null; repository?.urls.clear();
   state = emptyData(); syncStatus = 'loading'; mode = nextUser ? 'cloud' : 'loading';
@@ -611,9 +617,7 @@ async function importBackup(file) {
   } catch (error) { toast(friendly(error), 6500); } finally { $('#importInput').value = ''; }
 }
 function randomPick() {
-  const candidates = groupRestaurants(state, state.restaurants.filter(r => r.status === 'wishlist' || summary(state, r).wouldReturn)).map(g => g.latest);
-  if (!candidates.length) return toast('先加几家想吃或想二刷的店');
-  const restaurant = candidates[Math.floor(Math.random() * candidates.length)]; showDetail(restaurant.id); toast(`这次去：${restaurant.name}`);
+  discovery.openDecision();
 }
 function isStandalone() { return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; }
 function updateInstallUI() {
@@ -627,9 +631,11 @@ async function installApp() {
   await deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; updateInstallUI();
 }
 
+const discovery = new DiscoveryUI({ getState: () => state, selfId, renderHTML, esc, cardHTML, photoHTML, openSheet, closeSheet, renderRecords, switchPage, toast, getEpoch: () => authEpoch });
 document.addEventListener('click', event => {
   const target = event.target.closest('button, [data-open], [data-close], [data-filter-go], [data-go]'); if (!target || target.disabled) return;
   if (target.dataset.photo) return showGallery(target.dataset.photo);
+  if (target.dataset.copyPlace) { const r = state.restaurants.find(row => row.id === target.dataset.copyPlace); if (r) discovery.openCopy(r); return; }
   if (target.dataset.detail) return showDetail(target.dataset.detail);
   if (target.dataset.repeat) return beginRepeat(target.dataset.repeat);
   if (target.dataset.existingVisit) {
@@ -644,7 +650,7 @@ document.addEventListener('click', event => {
   if (target.hasAttribute('data-add-wish')) return openEditor(null, 'wishlist');
   if (target.dataset.nav) return switchPage(target.dataset.nav);
   if (target.dataset.go) return switchPage(target.dataset.go);
-  if (target.dataset.filterGo) { activeFilter = target.dataset.filterGo; renderRecords(); return switchPage('records'); }
+  if (target.dataset.filterGo) { discovery.resetRecordFilters(); activeFilter = target.dataset.filterGo; renderRecords(); return switchPage('records'); }
   if (target.dataset.filter) { activeFilter = target.dataset.filter; return renderRecords(); }
   if (target.dataset.rank) { rankKey = target.dataset.rank; return renderRank(); }
   if (target.dataset.close) return closeSheet(target.dataset.close);
