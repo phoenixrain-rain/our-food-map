@@ -70,7 +70,7 @@ test('installed shell reloads offline and only removes its own old caches', asyn
     await navigator.serviceWorker.register('/service-worker.js'); await navigator.serviceWorker.ready;
   });
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
-  const keys = await page.evaluate(() => caches.keys()); expect(keys).toContain('other-application'); expect(keys).not.toContain('our-food-map-shell-v1'); expect(keys).toContain('our-food-map-shell-v5');
+  const keys = await page.evaluate(() => caches.keys()); expect(keys).toContain('other-application'); expect(keys).not.toContain('our-food-map-shell-v1'); expect(keys).toContain('our-food-map-shell-v6');
   await context.setOffline(true); await page.reload(); await expect(page.locator('#homeCards .food-card')).toContainText('离线本机档案'); await expect(page.locator('#connectionBanner')).toContainText('当前离线');
 });
 test('OTP errors and resend cooldown are visible without sending a real email', async ({ page }) => {
@@ -175,7 +175,7 @@ test('revisit uses same place, blank scores and new photos while preserving past
   await page.locator('#visitDate').fill('2026-09-20'); await page.locator('#price').fill('120'); await page.locator('#reviewText').fill('第二次的独立评价'); await rate(page, 'taste', 5); await rate(page, 'value', 4); await rate(page, 'vibe', 6);
   await page.locator('#photoInput').setInputFiles({ name: 'revisit.png', mimeType: 'image/png', buffer: pixel }); await expect(page.locator('#photoStatus')).toContainText('已就绪'); await page.locator('#saveRecordBtn').click(); await expect(page.locator('#editSheet')).not.toHaveClass(/open/);
   await page.locator('[data-nav="records"]').click(); await expect(page.locator('#recordList .food-card')).toHaveCount(2); await expect(page.locator('#resultsCount')).toHaveText('2 家店 · 3 条记录');
-  const card = page.locator('#recordList .food-card[data-place="complete"]'); await expect(card.locator('.record-state')).toHaveText('去过 2 次'); await expect(card.locator('.visit-context')).toContainText('第 2 次打卡');
+  const card = page.locator('#recordList .food-card[data-place="complete"]'); await expect(card.locator('.visit-tier')).toHaveText('回头客2 次'); await expect(card.locator('.visit-context')).toContainText('第 2 次打卡');
   await card.locator('.visit-history summary').click(); await expect(card.locator('.visit-row')).toHaveCount(2); await expect(card.locator('.visit-row img')).toHaveCount(2);
   await page.locator('#refreshBtn').click(); await expect(card.locator('.visit-history')).toHaveAttribute('open', '');
   await card.locator('.visit-open[data-detail="complete"]').click(); await expect(page.locator('#detailBody .person-card')).toHaveCount(2); await expect(page.locator('#detailBody .metric.value')).toContainText('7.0');
@@ -183,14 +183,14 @@ test('revisit uses same place, blank scores and new photos while preserving past
   await page.locator('[data-nav="rank"]').click(); await expect(page.locator('#rankList .food-card')).toHaveCount(1); await expect(page.locator('#rankList .metric.value')).toContainText('7.0'); await expect(page.locator('#statsGrid .stat').first().locator('strong')).toHaveText('2');
   // Delete only the second meal; the first meal and its photo stay intact.
   await page.locator('[data-nav="records"]').click(); await page.locator('#recordList .food-card').first().locator('.food-content').click(); page.once('dialog', dialog => dialog.accept()); await page.locator('#detailBody [data-delete]').click(); await expect(page.locator('#detailSheet')).not.toHaveClass(/open/);
-  await page.reload(); await page.locator('[data-nav="records"]').click(); await expect(page.locator('#recordList .food-card')).toHaveCount(2); await expect(page.locator('#recordList [data-place="complete"] .record-state')).toHaveText('去过 1 次');
-  await page.locator('[data-nav="profile"]').click(); await page.locator('[data-open="trash"]').click(); await page.locator('[data-restore]').click(); await expect(page.locator('#trashList .trash-record')).toHaveCount(0); await page.locator('[data-close="trashSheet"]').click(); await page.locator('[data-nav="records"]').click(); await expect(page.locator('#recordList [data-place="complete"] .record-state')).toHaveText('去过 2 次');
+  await page.reload(); await page.locator('[data-nav="records"]').click(); await expect(page.locator('#recordList .food-card')).toHaveCount(2); await expect(page.locator('#recordList [data-place="complete"] .visit-tier')).toHaveText('初见1 次');
+  await page.locator('[data-nav="profile"]').click(); await page.locator('[data-open="trash"]').click(); await page.locator('[data-restore]').click(); await expect(page.locator('#trashList .trash-record')).toHaveCount(0); await page.locator('[data-close="trashSheet"]').click(); await page.locator('[data-nav="records"]').click(); await expect(page.locator('#recordList [data-place="complete"] .visit-tier')).toHaveText('回头客2 次');
 });
 
 test('existing visits can be linked or separated without merging reviews and same-day warning prevents accidental duplicates', async ({ page }) => {
   await seedRecords(page); await ready(page); await page.locator('#homeCards [data-detail="pending"]').first().click(); await page.locator('#detailBody [data-edit]').click(); await page.locator('#recordPlace').selectOption('complete');
   page.once('dialog', dialog => dialog.accept()); await page.locator('#saveRecordBtn').click(); await expect(page.locator('#editSheet')).not.toHaveClass(/open/);
-  await page.locator('[data-nav="records"]').click(); await expect(page.locator('#recordList .food-card')).toHaveCount(1); await expect(page.locator('#recordList .record-state')).toHaveText('去过 2 次');
+  await page.locator('[data-nav="records"]').click(); await expect(page.locator('#recordList .food-card')).toHaveCount(1); await expect(page.locator('#recordList .visit-tier')).toHaveText('回头客2 次');
   await page.locator('#recordList .visit-history summary').click(); await page.locator('#recordList .visit-open[data-detail="pending"]').click(); await page.locator('#detailBody [data-edit]').click(); await expect(page.locator('#overallScore')).toHaveText('10.0'); await expect(page.locator('#photoPreviews .preview')).toHaveCount(0);
   await page.locator('#recordPlace').selectOption('new'); page.once('dialog', dialog => dialog.accept()); await page.locator('#saveRecordBtn').click(); await expect(page.locator('#editSheet')).not.toHaveClass(/open/); await expect(page.locator('#recordList .food-card')).toHaveCount(2);
   await page.locator('#recordList [data-record="complete"] .food-content').click(); await page.locator('#detailBody [data-repeat]').click(); await page.locator('#visitDate').fill('2026-09-17'); await expect(page.locator('#placeSuggestion')).toContainText('这一天已有打卡');

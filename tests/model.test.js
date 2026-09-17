@@ -1,7 +1,39 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { emptyData, rating, reviewScore, summary, tasteMatch, filterRestaurants, sortRestaurants, rankedRestaurants, formatPrice, todayLocal, validateBackup, safeImageURL, groupRestaurants, visitsFor, visitLabel } from '../lib/model.js';
+import { visitTier } from '../lib/model.js';
+import { CloudRepository } from '../lib/cloud.js';
 const restaurant = (id, price = null, status = 'eaten') => ({ id, name: id, status, price_per_person: price, created_at: '2026-09-16' });
+
+test('visit badges count active visits, not reviewers, wishlists, duplicate rows or same-name branches', () => {
+  const data = emptyData(), r = { ...restaurant('first'), place_id: 'place-a' };
+  assert.equal(visitTier(data, r).name, '待初访');
+  for (let i = 1; i <= 16; i++) {
+    data.restaurants.push({ ...r, id: `visit-${i}` });
+    const tier = visitTier(data, r);
+    assert.equal(tier.count, i);
+    assert.equal(tier.name, i < 2 ? '初见' : i < 4 ? '回头客' : i < 8 ? '熟客' : i < 15 ? '常客' : '私藏宝店');
+  }
+  data.restaurants.push(data.restaurants[0], { ...r, id: 'wish', status: 'wishlist' }, { ...r, id: 'deleted', deleted_at: '2026-09-17' }, { ...r, id: 'branch', place_id: 'different' });
+  assert.equal(visitTier(data, r).count, 16);
+  data.restaurants = data.restaurants.filter(x => !['visit-16', 'visit-15'].includes(x.id));
+  assert.equal(visitTier(data, r).name, '常客'); assert.equal(visitTier(data, r).remaining, 1);
+});
+test('avatar backups permit only bounded embedded raster images, never signed URLs or SVG', () => {
+  const data = { ...emptyData(), avatar_url: 'data:image/jpeg;base64,YQ==', partner_avatar_url: 'https://example.com/signed?secret=example' };
+  assert.equal(validateBackup(data).avatar_url, data.avatar_url); assert.equal(validateBackup(data).partner_avatar_url, '');
+  data.avatar_url = 'data:image/svg+xml;base64,YQ=='; assert.equal(validateBackup(data).avatar_url, '');
+  data.avatar_url = 'data:image/jpeg;base64,' + 'A'.repeat(1500000); assert.equal(validateBackup(data).avatar_url, '');
+});
+test('signed images cache success and failures, explicit retry bypasses the negative cache', async () => {
+  let calls = 0;
+  const repo = new CloudRepository({ storage: { from: () => ({ createSignedUrls: async paths => { calls++; return { data: paths.map(path => path === 'good' ? { path, signedUrl: 'https://example.com/image' } : { path, error: 'missing' }) }; } }) } });
+  const rows = [{ path: 'good' }, { path: 'missing' }];
+  const first = await repo.signPhotos(rows); assert.equal(first[0].unavailable, false); assert.equal(first[1].unavailable, true);
+  assert.deepEqual(await repo.signPhotos(rows), first); assert.equal(calls, 1);
+  await repo.signPhotos(rows, true); assert.equal(calls, 2);
+  repo.urls.get('missing').until = 0; await repo.signPhotos(rows); assert.equal(calls, 3);
+});
 test('unrated and partial ratings never become automatic 8s or zeros', () => {
   assert.equal(rating(null), null); assert.equal(rating(''), null); assert.equal(rating(false), null); assert.equal(rating(0), null); assert.equal(rating(11), null);
   assert.equal(reviewScore({ taste: 9, value: 8 }), null);

@@ -1,15 +1,17 @@
-const CACHE_NAME = 'our-food-map-shell-v5';
+const CACHE_NAME = 'our-food-map-shell-v6';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './app.js?v=2.2.0',
-  './styles.css?v=2.2.0',
-  './vendor/supabase.js?v=2.2.0',
-  './lib/model.js?v=2.2.0',
-  './lib/photos.js?v=2.2.0',
-  './lib/cloud.js?v=2.2.0',
-  './lib/local-store.js?v=2.2.0',
+  './app.js?v=2.3.0',
+  './styles.css?v=2.3.0',
+  './vendor/supabase.js?v=2.3.0',
+  './lib/model.js?v=2.3.0',
+  './lib/photos.js?v=2.3.0',
+  './lib/cloud.js?v=2.3.0',
+  './lib/local-store.js?v=2.3.0',
+  './lib/avatar.js?v=2.3.0',
+  './lib/dom.js?v=2.3.0',
   './icons/app-icon-180.png',
   './icons/app-icon-192.png',
   './icons/app-icon-512.png'

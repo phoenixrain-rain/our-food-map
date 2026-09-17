@@ -31,12 +31,12 @@ const counts = async () => Object.fromEntries(await Promise.all(['spaces', 'spac
 const before = await counts();
 const check = (result, label) => { if (result.error) throw new Error(`${label}: ${result.error.message}`); return result.data; };
 async function recordResources() { await writeFile(resourceFile, JSON.stringify(resources, null, 2)); }
-async function objectsUnder(prefix) {
-  const listed = check(await admin.storage.from('food-photos').list(prefix, { limit: 1000 }), 'list test storage');
+async function objectsUnder(prefix, bucket = 'food-photos') {
+  const listed = check(await admin.storage.from(bucket).list(prefix, { limit: 1000 }), 'list test storage');
   const paths = [];
   for (const item of listed) {
     const path = `${prefix}/${item.name}`;
-    if (item.id) paths.push(path); else paths.push(...await objectsUnder(path));
+    if (item.id) paths.push(path); else paths.push(...await objectsUnder(path, bucket));
   }
   return paths;
 }
@@ -68,6 +68,25 @@ try {
     return canvas.toDataURL('image/jpeg', .82);
   });
   const jpeg = Buffer.from(image.split(',')[1], 'base64'); await imagePage.close();
+  const avatarPath = `${space.id}/${resources.users[0]}/${randomUUID()}.jpg`;
+  const avatarB = `${space.id}/${resources.users[1]}/${randomUUID()}.jpg`;
+  check(await a.storage.from('food-avatars').upload(avatarPath, jpeg, { contentType: 'image/jpeg' }), 'stage private avatar');
+  check(await b.storage.from('food-avatars').upload(avatarB, jpeg, { contentType: 'image/jpeg' }), 'stage partner avatar');
+  assert.ok((await b.storage.from('food-avatars').upload(`${space.id}/${resources.users[0]}/${randomUUID()}.jpg`, jpeg, { contentType: 'image/jpeg' })).error, 'partner cannot upload into my avatar folder');
+  assert.ok((await a.storage.from('food-avatars').upload(`${space.id}/${resources.users[0]}/${randomUUID()}.jpg`, Buffer.alloc(1048577), { contentType: 'image/jpeg' })).error, 'oversized avatar rejected');
+  const profileArgs = { p_nickname: '小雨', p_avatar_path: avatarPath, p_expected_avatar_path: null, p_expected_nickname: '小雨' };
+  check(await a.rpc('save_member_profile', profileArgs), 'save my avatar');
+  check(await a.rpc('save_member_profile', profileArgs), 'idempotent avatar save');
+  check(await b.rpc('save_member_profile', { p_nickname: '小晴', p_avatar_path: avatarB, p_expected_avatar_path: null, p_expected_nickname: '小晴' }), 'save partner avatar');
+  assert.ok((await a.from('space_members').update({ avatar_path: avatarB }).eq('user_id', resources.users[0])).error, 'cannot bypass profile RPC');
+  assert.ok((await a.rpc('save_member_profile', { ...profileArgs, p_avatar_path: avatarB, p_expected_avatar_path: avatarPath })).error, 'cannot use partner avatar path');
+  assert.ok((await a.rpc('save_member_profile', { ...profileArgs, p_avatar_path: `${space.id}/${resources.users[0]}/${randomUUID()}.jpg`, p_expected_avatar_path: avatarPath })).error, 'cannot save missing avatar');
+  assert.ok((await a.rpc('save_member_profile', { ...profileArgs, p_avatar_path: null })).error, 'stale profile editor cannot clear newer avatar');
+  await b.storage.from('food-avatars').remove([avatarPath]); await a.storage.from('food-avatars').remove([avatarPath]);
+  assert.equal((await fetch(check(await b.storage.from('food-avatars').createSignedUrl(avatarPath, 60), 'referenced avatar protected and shared').signedUrl)).status, 200);
+  assert.ok((await outsider.storage.from('food-avatars').createSignedUrl(avatarPath, 60)).error, 'outsider cannot view avatar');
+  assert.notEqual((await fetch(`${url}/storage/v1/object/public/food-avatars/${avatarPath}`)).status, 200, 'no public avatar endpoint');
+  console.log('PASS private avatars, ownership, upload limit, protected deletion, stale editor and idempotent save');
   const id = randomUUID(), path = `${space.id}/${id}/${resources.users[0]}/${randomUUID()}.jpg`;
   check(await a.storage.from('food-photos').upload(path, jpeg, { contentType: 'image/jpeg' }), 'stage photo before restaurant');
   const restaurant = { id, space_id: space.id, name: '周末小馆 · 测试', city: '沈阳', category: '东北菜', address: '测试地址', visit_date: '2026-09-16', price_per_person: 68.5, tags: ['约会', '分量足'], status: 'eaten' };
@@ -126,6 +145,38 @@ try {
   await expect(pageB.locator('#helloLine')).toContainText('已同步', { timeout: 30000 });
   await expect(pageA.locator('#heroMembers')).toContainText('两人已加入');
   await expect.poll(() => pageA.locator('#homeCards img').first().evaluate(img => img.naturalWidth), { timeout: 15000 }).toBeGreaterThan(0);
+  await expect.poll(() => pageA.locator('#faceMe img').evaluate(img => img.naturalWidth), { timeout: 15000 }).toBeGreaterThan(0);
+  await expect.poll(() => pageB.locator('#facePartner img').evaluate(img => img.naturalWidth), { timeout: 15000 }).toBeGreaterThan(0);
+  await pageA.evaluate(() => { window.stablePhoto = document.querySelector('#homeCards img'); window.photoLoads = 0; window.stablePhoto.addEventListener('load', () => window.photoLoads++); });
+  await pageA.locator('#faceMe').click();
+  await pageA.locator('#avatarInput').setInputFiles({ name: 'portrait.jpg', mimeType: 'image/jpeg', buffer: jpeg });
+  await expect(pageA.locator('#avatarMessage')).toContainText('预览已就绪');
+  await pageA.locator('#avatarZoom').fill('1.5');
+  let failAvatarUpload = true;
+  await pageA.route('**/storage/v1/object/food-avatars/**', async route => { if (failAvatarUpload && route.request().method() === 'POST') { failAvatarUpload = false; return route.abort('failed'); } return route.continue(); });
+  await pageA.locator('#saveNickname').click(); await expect(pageA.locator('#avatarMessage')).toContainText('本次修改仍保留', { timeout: 30000 });
+  assert.equal(check(await a.from('space_members').select('avatar_path').eq('user_id', resources.users[0]).single(), 'failed upload keeps old avatar').avatar_path, avatarPath);
+  await pageA.unroute('**/storage/v1/object/food-avatars/**');
+  // Response loss after commit is retried with the same file/path, without deleting the new avatar.
+  let loseProfileResponse = true;
+  await pageA.route('**/rest/v1/rpc/save_member_profile', async route => { if (loseProfileResponse) { loseProfileResponse = false; await route.fetch(); return route.abort('failed'); } return route.continue(); });
+  await pageA.locator('#saveNickname').click(); await expect(pageA.locator('#avatarMessage')).toContainText('本次修改仍保留', { timeout: 30000 });
+  await pageA.locator('#saveNickname').click(); await expect(pageA.locator('#identitySheet')).not.toHaveClass(/open/, { timeout: 30000 });
+  await pageA.unroute('**/rest/v1/rpc/save_member_profile');
+  const currentAvatar = check(await a.from('space_members').select('avatar_path').eq('user_id', resources.users[0]).single(), 'replacement avatar path').avatar_path;
+  assert.notEqual(currentAvatar, avatarPath);
+  await expect(pageB.locator('#facePartner img')).toHaveAttribute('src', new RegExp(currentAvatar.replace(/[.]/g, '\\.')), { timeout: 30000 });
+  await expect.poll(() => pageB.locator('#facePartner img').evaluate(img => img.naturalWidth), { timeout: 15000 }).toBe(512);
+  await expect.poll(async () => !!(await a.storage.from('food-avatars').createSignedUrl(avatarPath, 60)).error, { timeout: 20000 }).toBe(true);
+  assert.equal(await pageA.evaluate(() => window.stablePhoto === document.querySelector('#homeCards img')), true);
+  assert.equal(await pageA.evaluate(() => window.photoLoads), 0);
+  // Several background refresh triggers must neither replace nor re-download an unchanged photo.
+  for (let i = 0; i < 3; i++) { await pageA.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await pageA.waitForTimeout(1200); }
+  assert.equal(await pageA.evaluate(() => window.stablePhoto === document.querySelector('#homeCards img')), true); assert.equal(await pageA.evaluate(() => window.photoLoads), 0);
+  await pageA.locator('[data-nav="profile"]').click(); await pageA.screenshot({ path: '.private-audit/mobile-profile-v2.3.png' });
+  await pageA.locator('[data-open="identity"].setting-row').click(); await pageA.screenshot({ path: '.private-audit/mobile-avatar-v2.3.png' }); await pageA.locator('[data-close="identitySheet"]').click();
+  await pageA.locator('[data-nav="home"]').click();
+  console.log('PASS avatar upload failure/retry, committed-response loss, partner live update, old-file cleanup and stable decoded photos through background sync');
   await pageA.screenshot({ path: '.private-audit/mobile-home.png' });
   await pageA.locator('#homeCards .food-content').click(); await expect(pageA.locator('#detailBody .person-card')).toHaveCount(2);
   await expect(pageA.locator('#detailBody .photo-wall .photo-placeholder').last()).toBeVisible();
@@ -238,6 +289,9 @@ try {
   console.log('PASS automatic refetch fallback with all Realtime WebSocket messages suppressed');
   await pageA.locator('[data-nav="profile"]').click(); await pageA.locator('[data-open="cloud"]').click(); await pageA.locator('#logoutBtn').click(); await expect(pageA.locator('#helloLine')).toContainText('本机档案', { timeout: 20000 });
   await expect(pageA.locator('#homeCards .food-card')).toHaveCount(0); assert.deepEqual(browserErrors, []);
+  await expect(pageA.locator('#faceMe img')).toHaveCount(0); await expect(pageA.locator('#facePartner img')).toHaveCount(0);
+  check(await b.rpc('save_member_profile', { p_nickname: '小晴自动同步检查', p_avatar_path: null, p_expected_avatar_path: avatarB, p_expected_nickname: '小晴自动同步检查' }), 'reset partner avatar');
+  await expect(pageB.locator('#faceMe img')).toHaveCount(0, { timeout: 30000 });
   console.log('PASS real two-browser sync, member list, missing-photo fallback, failed upload retry, mobile UI and logout isolation');
 } finally {
   await browser?.close(); if (server) server.kill();
@@ -249,6 +303,8 @@ try {
       if (row.name !== marker) throw new Error('Test space identity mismatch; cleanup halted');
       const paths = await objectsUnder(space.id);
       if (paths.length) check(await admin.storage.from('food-photos').remove(paths), 'delete test photos');
+      const avatars = await objectsUnder(space.id, 'food-avatars');
+      if (avatars.length) check(await admin.storage.from('food-avatars').remove(avatars), 'delete isolated test avatars');
       check(await admin.from('spaces').delete().eq('id', space.id).eq('name', marker), 'delete isolated test space');
     } catch (error) { cleanupFailed = true; console.error(`Test cleanup requires attention: ${error.message}`); }
   }

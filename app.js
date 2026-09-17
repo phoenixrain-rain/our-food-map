@@ -1,7 +1,10 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.2.0';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.2.0';
-import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.2.0';
-import { CloudRepository } from './lib/cloud.js?v=2.2.0';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.3.0';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.3.0';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.3.0';
+import { CloudRepository } from './lib/cloud.js?v=2.3.0';
+import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.3.0';
+import { renderHTML } from './lib/dom.js?v=2.3.0';
+import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.3.0';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -14,11 +17,18 @@ let mode = 'loading', syncStatus = 'loading', activePage = 'home', activeFilter 
 let authEpoch = 0, syncChain = Promise.resolve(), syncTimer, realtimeChannel, subscribedSpace, deferredInstallPrompt;
 let editor = null, saving = false, photosBusy = false, detailId = null, gallery = [], galleryIndex = 0, cooldownUntil = 0;
 let toastTimer, sessionKnown = false, lastFocused;
+let identity = null, avatarBusy = false, profileSaving = false;
 const selfId = () => user?.id || 'local-me';
 const myReview = id => reviewsFor(state, id).find(r => r.user_id === selfId());
 const partnerReview = id => reviewsFor(state, id).find(r => r.user_id !== selfId());
 const initials = name => [...(String(name || 'TA').trim())].slice(0, 2).join('');
 const ownerName = id => id === selfId() ? `${state.nickname || '我'}（我）` : state.members.find(m => m.user_id === id)?.nickname || state.partnerName || 'TA';
+const avatarURL = id => mode === 'cloud' ? state.members.find(m => m.user_id === id)?.avatar_url : id === selfId() ? state.avatar_url : state.partner_avatar_url;
+function avatarHTML(url, name) {
+  const safe = safeImageURL(url);
+  return `<span class="avatar-fallback" aria-hidden="true">${esc(initials(name))}</span>${safe ? `<img src="${esc(safe)}" data-avatar alt="${esc(name)}的头像" decoding="async">` : ''}`;
+}
+function memberAvatar(id, name, className = 'review-avatar') { return `<span class="avatar ${className}">${avatarHTML(avatarURL(id), name)}</span>`; }
 function toast(message, duration = 4000) { $('#toast').textContent = message; $('#toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('show'), duration); }
 function friendly(error) {
   const message = (error?.message || String(error)).replace('每人每家', '每人每次打卡');
@@ -32,11 +42,16 @@ function showFormMessage(message = '') { $('#saveMessage').textContent = message
 function openSheet(id) {
   lastFocused = document.activeElement;
   $('#' + id).classList.add('open');
-  if (id === 'identitySheet') $('#nicknameInput').value = state.nickname || '';
+  if (id === 'identitySheet') openIdentity();
   if (id === 'coupleSheet' && user) scheduleSync();
   if (id === 'installSheet') updateInstallUI();
 }
 function closeSheet(id, force = false) {
+  if (id === 'identitySheet' && !force) {
+    if (avatarBusy || profileSaving) return toast('正在处理头像，请稍候');
+    if (identity?.dirty && !window.confirm('放弃尚未保存的头像和昵称修改？')) return;
+    discardIdentity();
+  }
   if (id === 'editSheet' && !force) {
     if (saving || photosBusy) return toast('正在处理，请稍候');
     if (editor?.dirty && !window.confirm('放弃这次尚未保存的修改？')) return;
@@ -75,13 +90,17 @@ function visitHistoryHTML(rows, selectedId = null) {
 }
 function openHistories(selector) { return new Set($$(selector + ' .visit-history[open]').map(el => el.dataset.history)); }
 function restoreHistories(selector, keys) { $$(selector + ' .visit-history').forEach(el => { el.open = keys.has(el.dataset.history); }); }
-function renderHistoryList(selector, html) { const opened = openHistories(selector); $(selector).innerHTML = html; restoreHistories(selector, opened); }
+function renderHistoryList(selector, html) { const opened = openHistories(selector); renderHTML($(selector), html); restoreHistories(selector, opened); }
+function tierHTML(r, progress = false) {
+  const tier = visitTier(state, r);
+  return `<span class="visit-tier tier-${tier.color}" title="${esc(tier.next ? `再去 ${tier.remaining} 次成为${tier.next}` : '已经是你们的私藏宝店')}" aria-label="${esc(tier.name)}，去过 ${tier.count} 次">${tier.name}<i></i>${tier.count} 次</span>${progress ? `<div class="tier-progress"><p>${tier.next ? `再去 ${tier.remaining} 次，点亮「${tier.next}」` : '一次次重逢，变成了你们的私藏宝店。'}</p><details><summary>到访徽章怎么算？</summary><div class="tier-legend">${VISIT_TIERS.slice(1).map(t => `<span class="visit-tier tier-${t.color}">${t.name} · ${t.min} 次起</span>`).join('')}</div><p>按同一家店未删除的吃过记录计数，双方评价不重复计次；想吃计划不计入。这是你们的到访纪念，不是商家的付费会员。</p></details></div>` : ''}`;
+}
 function cardHTML(r, rank = null, grouped = false) {
   const s = summary(state, r), me = myReview(r.id), other = partnerReview(r.id);
-  const visits = visitsFor(state, r), eatenCount = visits.filter(v => v.status === 'eaten').length;
+  const visits = visitsFor(state, r);
   const reviewText = r.status === 'wishlist' ? '想吃清单 · 还没去过' : `我${isComplete(me) ? '已评' : '待评'} · ${esc(state.partnerName || 'TA')}${isComplete(other) ? '已评' : '待评'}`;
   const favoriteDish = [me?.favorite_dish, other?.favorite_dish].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(' / ');
-  return `<article class="food-card" data-record="${esc(r.id)}" data-place="${esc(r.place_id || r.id)}"><div class="food-card-top"><div class="food-photo">${photoHTML(firstPhoto(r.id), r.name)}${rank !== null ? `<span class="rank-marker">${rank + 1}</span>` : ''}</div><button type="button" class="food-content" data-detail="${esc(r.id)}"><div class="food-line"><h3 class="food-title">${esc(r.name)}</h3><span class="record-state">${grouped && eatenCount ? `去过 ${eatenCount} 次` : r.status === 'wishlist' ? '想吃' : '吃过'}</span></div><div class="food-meta">${esc([r.city, r.category].filter(Boolean).join(' · ') || '未填写位置')}</div>${favoriteDish ? `<div class="dish-line">推荐 ${esc(favoriteDish)}</div>` : `<div class="dish-line subtle">${esc(r.address || '点开记录这一顿')}</div>`}<div class="tagline">${(r.tags || []).slice(0, 2).map(t => `<span class="tag">${esc(t)}</span>`).join('')}${s.bothFavorite ? '<span class="tag loved">♥ 共同最爱</span>' : ''}${s.wouldReturn ? '<span class="tag return">想二刷</span>' : ''}</div></button></div><div class="visit-context"><span>${esc(visitLabel(state, r))}</span><span>${rank !== null ? '入榜打卡 ' : ''}${esc(r.visit_date || '未填用餐日期')}</span></div><button type="button" class="card-metrics-button" data-detail="${esc(r.id)}">${metricHTML(s, r.price_per_person, r.status === 'wishlist')}</button><div class="card-footer"><span>${reviewText}</span><button type="button" class="text-btn" data-detail="${esc(r.id)}">查看这一顿 ›</button></div>${grouped ? `<div class="place-actions"><span>${rank !== null ? '显示最近一次双方评完的打卡' : '显示最近一次符合筛选的记录'}</span><button type="button" class="text-btn" data-repeat="${esc(r.id)}">＋ 再来一次</button></div>${visitHistoryHTML(visits, r.id)}` : ''}</article>`;
+  return `<article class="food-card" data-record="${esc(r.id)}" data-place="${esc(r.place_id || r.id)}"><div class="food-card-top"><div class="food-photo">${photoHTML(firstPhoto(r.id), r.name)}${rank !== null ? `<span class="rank-marker">${rank + 1}</span>` : ''}</div><button type="button" class="food-content" data-detail="${esc(r.id)}"><div class="food-line"><h3 class="food-title">${esc(r.name)}</h3><span class="record-state">${r.status === 'wishlist' ? '想吃' : '吃过'}</span></div><div class="food-meta">${esc([r.city, r.category].filter(Boolean).join(' · ') || '未填写位置')}</div>${favoriteDish ? `<div class="dish-line">推荐 ${esc(favoriteDish)}</div>` : `<div class="dish-line subtle">${esc(r.address || '点开记录这一顿')}</div>`}<div class="tagline">${(r.tags || []).slice(0, 2).map(t => `<span class="tag">${esc(t)}</span>`).join('')}${s.bothFavorite ? '<span class="tag loved">♥ 共同最爱</span>' : ''}${s.wouldReturn ? '<span class="tag return">想二刷</span>' : ''}</div></button></div><div class="visit-context">${tierHTML(r)}<span>${esc(visitLabel(state, r))}</span><span>${rank !== null ? '入榜打卡 ' : ''}${esc(r.visit_date || '未填用餐日期')}</span></div><button type="button" class="card-metrics-button" data-detail="${esc(r.id)}">${metricHTML(s, r.price_per_person, r.status === 'wishlist')}</button><div class="card-footer"><span>${reviewText}</span><button type="button" class="text-btn" data-detail="${esc(r.id)}">查看这一顿 ›</button></div>${grouped ? `<div class="place-actions"><span>${rank !== null ? '显示最近一次双方评完的打卡' : '显示最近一次符合筛选的记录'}</span><button type="button" class="text-btn" data-repeat="${esc(r.id)}">＋ 再来一次</button></div>${visitHistoryHTML(visits, r.id)}` : ''}</article>`;
 }
 function render() {
   renderHeader(); renderHome(); renderRecords(); renderRank(); renderProfile(); renderTrash(); renderCategories();
@@ -103,7 +122,8 @@ function renderHeader() {
   $('#helloLine').textContent = mode === 'loading' ? '正在读取档案…' : !navigator.onLine ? '当前离线' : mode === 'local' ? '本机档案 · 仅保存在这台设备' : !state.space ? '已登录 · 等待加入空间' : connected ? '双人空间 · 已同步' : '云同步待重试';
   $('#pageTitle').textContent = { home: '今天吃什么？', records: '我们的记录', rank: '美食榜单', profile: '我们的小档案' }[activePage];
   $('#spaceName').textContent = state.space?.name || '我们的美食地图';
-  $('#faceMe').textContent = initials(state.nickname); $('#profileFace').textContent = initials(state.nickname); $('#facePartner').textContent = initials(state.partnerName);
+  renderHTML($('#faceMe'), avatarHTML(avatarURL(selfId()), state.nickname)); renderHTML($('#profileFace'), avatarHTML(avatarURL(selfId()), state.nickname));
+  renderHTML($('#facePartner'), avatarHTML(avatarURL(state.members.find(m => m.user_id !== selfId())?.user_id || 'local-partner'), state.partnerName));
   const match = tasteMatch(state, selfId());
   $('#matchScore').textContent = match.value === null ? '—' : `${match.value}%`;
   $('#matchScore').title = match.count ? `基于 ${match.count} 次双方都填写味道分的打卡` : '双方给同一顿的味道评分后生成';
@@ -114,11 +134,12 @@ function renderHeader() {
 function renderHome() {
   const eaten = sortRestaurants(state.restaurants.filter(r => r.status === 'eaten'), state);
   const wish = sortRestaurants(state.restaurants.filter(r => r.status === 'wishlist'), state);
+  renderHTML($('#homeStats'), `<button data-filter-go="eaten"><b>${groupRestaurants(state, eaten).length}</b><span>一起吃过的店</span></button><button data-filter-go="wishlist"><b>${groupRestaurants(state, wish).length}</b><span>想去的店</span></button><button data-filter-go="mine-pending"><b>${eaten.filter(r => !isComplete(myReview(r.id))).length}</b><span>等我来评分</span></button>`);
   $('#recordCountText').textContent = eaten.length ? `${eaten.length} 条记录 · 按上传时间从新到旧` : '按上传时间从新到旧 · 记下你们喜欢的一家店';
-  $('#homeCards').innerHTML = eaten.slice(0, 4).map(r => cardHTML(r)).join('') || emptyCard('第一顿，从这里开始', '记下味道、性价比、环境和人均。');
-  $('#wishCards').innerHTML = wish.slice(0, 2).map(r => cardHTML(r)).join('') || '<div class="empty"><h3>下次约会想吃什么？</h3><p>先记店名和预算，吃过之后再评分。</p><button type="button" class="primary" data-add-wish>加一家想吃的</button></div>';
+  renderHTML($('#homeCards'), eaten.slice(0, 4).map(r => cardHTML(r)).join('') || emptyCard('第一顿，从这里开始', '记下味道、性价比、环境和人均。'));
+  renderHTML($('#wishCards'), wish.slice(0, 2).map(r => cardHTML(r)).join('') || '<div class="empty"><h3>下次约会想吃什么？</h3><p>先记店名和预算，吃过之后再评分。</p><button type="button" class="primary" data-add-wish>加一家想吃的</button></div>');
   const photos = sortRestaurants(state.restaurants.filter(r => state.photos.some(p => p.restaurant_id === r.id)), state).slice(0, 8);
-  $('#storyRow').innerHTML = photos.map(r => `<button type="button" class="story" data-detail="${esc(r.id)}"><div class="story-ring"><div>${safeImageURL(firstPhoto(r.id)?.url) ? `<img src="${esc(firstPhoto(r.id).url)}" alt="${esc(r.name)}" loading="lazy">` : '🍴'}</div></div><span>${esc(r.name)}</span></button>`).join('') || '<p class="help-text">添加照片后，这里会留下你们的美食相册。</p>';
+  renderHTML($('#storyRow'), photos.map(r => `<button type="button" class="story" data-detail="${esc(r.id)}"><div class="story-ring"><div>${safeImageURL(firstPhoto(r.id)?.url) ? `<img src="${esc(firstPhoto(r.id).url)}" alt="${esc(r.name)}" loading="lazy">` : '🍴'}</div></div><span>${esc(r.name)}</span></button>`).join('') || '<p class="help-text">添加照片后，这里会留下你们的美食相册。</p>');
 }
 function renderRecords() {
   const matched = filterRestaurants(state, { filter: activeFilter, query: $('#searchInput').value, selfId: selfId() }), groups = groupRestaurants(state, matched);
@@ -138,10 +159,10 @@ function renderRank() {
   renderHistoryList('#rankList', rows.map((r, i) => cardHTML(r, i, true)).join('') || emptyCard(`还没有${labels[rankKey]}榜单`, '双方在同一次打卡中完成三个主评分后，这家店才会入榜。', ''));
   $$('#rankTabs [data-rank]').forEach(b => b.classList.toggle('active', b.dataset.rank === rankKey));
   const eaten = state.restaurants.filter(r => r.status === 'eaten'), costs = eaten.map(r => r.price_per_person).filter(p => p !== null), match = tasteMatch(state, selfId());
-  $('#statsGrid').innerHTML = `<div class="stat"><small>吃过的店铺</small><strong>${groupRestaurants(state, eaten).length}</strong><p>共 ${eaten.length} 次打卡，复访不多算店铺</p></div><div class="stat"><small>每次打卡平均人均</small><strong>${formatPrice(mean(costs))}</strong><p>来自 ${costs.length} 次已填人均的打卡</p></div><div class="stat"><small>双方完成主评分</small><strong>${eaten.filter(r => summary(state, r).completeCount === 2).length}</strong><p>次打卡 · 每次双方三个主评分齐全</p></div><div class="stat"><small>口味接近度</small><strong>${match.value === null ? '—' : `${match.value}%`}</strong><p>基于 ${match.count} 次双方的味道分</p></div>`;
+  renderHTML($('#statsGrid'), `<div class="stat"><small>吃过的店铺</small><strong>${groupRestaurants(state, eaten).length}</strong><p>共 ${eaten.length} 次打卡，复访不多算店铺</p></div><div class="stat"><small>每次打卡平均人均</small><strong>${formatPrice(mean(costs))}</strong><p>来自 ${costs.length} 次已填人均的打卡</p></div><div class="stat"><small>双方完成主评分</small><strong>${eaten.filter(r => summary(state, r).completeCount === 2).length}</strong><p>次打卡 · 每次双方三个主评分齐全</p></div><div class="stat"><small>口味接近度</small><strong>${match.value === null ? '—' : `${match.value}%`}</strong><p>基于 ${match.count} 次双方的味道分</p></div>`);
   const counts = new Map(); eaten.forEach(r => counts.set(r.category || '其他', (counts.get(r.category || '其他') || 0) + 1));
   const categories = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 7), max = categories[0]?.[1] || 1;
-  $('#categoryBars').innerHTML = categories.map(([name, count]) => `<div class="bar-row"><span>${esc(name)}</span><div class="bar"><i style="width:${count / max * 100}%"></i></div><b>${count}</b></div>`).join('') || '<p class="help-text">记录后会显示你们常吃的分类。</p>';
+  renderHTML($('#categoryBars'), categories.map(([name, count]) => `<div class="bar-row"><span>${esc(name)}</span><div class="bar"><i style="width:${count / max * 100}%"></i></div><b>${count}</b></div>`).join('') || '<p class="help-text">记录后会显示你们常吃的分类。</p>');
 }
 function renderProfile() {
   $('#profileName').textContent = state.nickname || '我'; $('#profileSub').textContent = user?.email || '本机档案 · 登录后可使用双人空间';
@@ -154,7 +175,7 @@ function renderProfile() {
     $('#currentSpaceName').textContent = state.space.name; $('#currentInviteCode').textContent = state.space.invite_code;
     $('#memberStatus').textContent = state.members.length === 2 ? '两人已加入' : '等待另一半加入';
     $('#memberStatus').className = `mode-badge ${state.members.length === 2 ? 'online' : ''}`;
-    $('#memberList').innerHTML = state.members.map(m => `<div class="member"><span class="member-avatar">${esc(initials(m.nickname))}</span><div><strong>${esc(m.nickname)}${m.user_id === selfId() ? '（我）' : ''}</strong><small>${m.role === 'owner' ? '空间创建者' : '已加入空间'}</small></div><span>✓ 已加入</span></div>`).join('') + (state.members.length < 2 ? '<div class="member waiting"><span class="member-avatar">＋</span><div><strong>等另一半来</strong><small>把下面的邀请码发给 TA</small></div></div>' : '');
+    renderHTML($('#memberList'), state.members.map(m => `<div class="member">${memberAvatar(m.user_id, m.nickname, 'member-avatar')}<div><strong>${esc(m.nickname)}${m.user_id === selfId() ? '（我）' : ''}</strong><small>${m.role === 'owner' ? '空间创建者' : '已加入空间'}</small></div><span>✓ 已加入</span></div>`).join('') + (state.members.length < 2 ? '<div class="member waiting"><span class="member-avatar">＋</span><div><strong>等另一半来</strong><small>把下面的邀请码发给 TA</small></div></div>' : ''));
   }
   $('#authStatus').textContent = user ? `当前账号：${user.email}。${state.space ? '已连接情侣空间。' : '登录成功，请创建或加入情侣空间。'}` : '用自己的邮箱登录，收到验证码后回到当前页面输入。';
   $('#loginForm').classList.toggle('hidden', !!user); $('#logoutBtn').classList.toggle('hidden', !user);
@@ -176,11 +197,11 @@ function renderDetail(id) {
   if (persons.length === 1 && rs.some(rv => rv.user_id !== selfId())) persons.push(rs.find(rv => rv.user_id !== selfId()).user_id);
   const cards = r.status === 'eaten' ? persons.map(person => {
     const review = rs.find(rv => rv.user_id === person);
-    return `<div class="person-card"><div class="who">${esc(ownerName(person))}</div>${CORE_DIMS.map(([key, label]) => `<div class="person-metric"><span>${label}</span><b>${formatScore(rating(review?.[key]))}</b></div>`).join('')}<div class="dimline"><span>综合</span><b>${formatScore(reviewScore(review))}</b></div>${EXTRA_DIMS.filter(([key]) => rating(review?.[key]) !== null).map(([key, label]) => `<div class="dimline"><span>${label}</span><b>${formatScore(review[key])}</b></div>`).join('')}${review?.favorite_dish ? `<div class="quote">推荐菜：${esc(review.favorite_dish)}</div>` : ''}${review?.comment ? `<div class="quote">${esc(review.comment)}</div>` : ''}<div class="tagline">${review?.favorite ? '<span class="tag loved">♥ 我的最爱</span>' : ''}${review?.would_return ? '<span class="tag return">想二刷</span>' : ''}</div></div>`;
+    return `<div class="person-card"><div class="who">${memberAvatar(person, ownerName(person))}<span>${esc(ownerName(person))}</span></div>${CORE_DIMS.map(([key, label]) => `<div class="person-metric"><span>${label}</span><b>${formatScore(rating(review?.[key]))}</b></div>`).join('')}<div class="dimline"><span>综合</span><b>${formatScore(reviewScore(review))}</b></div>${EXTRA_DIMS.filter(([key]) => rating(review?.[key]) !== null).map(([key, label]) => `<div class="dimline"><span>${label}</span><b>${formatScore(review[key])}</b></div>`).join('')}${review?.favorite_dish ? `<div class="quote">推荐菜：${esc(review.favorite_dish)}</div>` : ''}${review?.comment ? `<div class="quote">${esc(review.comment)}</div>` : ''}<div class="tagline">${review?.favorite ? '<span class="tag loved">♥ 我的最爱</span>' : ''}${review?.would_return ? '<span class="tag return">想二刷</span>' : ''}</div></div>`;
   }).join('') : '<p class="help-text">还没去过，先记录预算和期待。吃过后再留下评分。</p>';
-  $('#detailBody').innerHTML = `<div class="detail-cover">${photoHTML(firstPhoto(id), r.name)}</div><h2 class="detail-title">${esc(r.name)}</h2><p class="detail-meta">${esc([r.city, r.category, r.address, r.visit_date ? `用餐 ${r.visit_date}` : ''].filter(Boolean).join(' · ') || '还没有补充地址')}</p><p class="help-text">上传于 ${esc(r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '未记录时间')}</p>${metricHTML(s, r.price_per_person, r.status === 'wishlist')}<div class="compare">${cards}</div><p class="help-text">${r.status === 'eaten' ? '分项为已填写分数的平均值；每人的评价独立保存，双方评完后共同入榜。' : '预算仅供挑选餐厅参考，不计入实付统计。'}</p>${photos.length ? `<div class="section-head"><h2>这一顿的照片 <small>${photos.length}</small></h2></div><div class="photo-wall">${photos.map(p => photoHTML(p, `${r.name} · ${ownerName(p.user_id)}`)).join('')}</div>` : ''}<button type="button" class="save-btn" style="margin-top:18px" data-edit="${esc(id)}">${r.status === 'wishlist' ? '编辑 / 我们吃过了' : '编辑记录 / 写我的评价'}</button><button type="button" class="delete-record" data-delete="${esc(id)}">删除这条记录</button><p class="help-text">空间中的两人都可以删除；可到“我们 → 回收站”恢复。</p>`;
-  $('#detailBody [data-edit]').insertAdjacentHTML('beforebegin', `<div class="detail-visits"><p class="help-text">${esc(visitLabel(state, r))} · 同一家店的每次打卡独立保存。</p>${visitHistoryHTML(visitsFor(state, r), id)}<button type="button" class="secondary repeat-visit" data-repeat="${esc(id)}">${r.status === 'wishlist' ? '去打卡，写下这一顿' : '＋ 再来一次，新增打卡'}</button></div>`);
-  $('#detailBody [data-delete]').nextElementSibling.textContent = '只删除这一顿，不影响同店其他打卡。可到“我们 → 回收站”恢复。';
+  const detailVisits = `<div class="detail-visits">${tierHTML(r, true)}<p class="help-text">${esc(visitLabel(state, r))} · 同一家店的每次打卡独立保存。</p>${visitHistoryHTML(visitsFor(state, r), id)}<button type="button" class="secondary repeat-visit" data-repeat="${esc(id)}">${r.status === 'wishlist' ? '去打卡，写下这一顿' : '＋ 再来一次，新增打卡'}</button></div>`;
+  const detailMarkup = `<div class="detail-cover">${photoHTML(firstPhoto(id), r.name)}</div><h2 class="detail-title">${esc(r.name)}</h2><p class="detail-meta">${esc([r.city, r.category, r.address, r.visit_date ? `用餐 ${r.visit_date}` : ''].filter(Boolean).join(' · ') || '还没有补充地址')}</p><p class="help-text">上传于 ${esc(r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '未记录时间')}</p>${metricHTML(s, r.price_per_person, r.status === 'wishlist')}<div class="compare">${cards}</div><p class="help-text">${r.status === 'eaten' ? '分项为已填写分数的平均值；每人的评价独立保存，双方评完后共同入榜。' : '预算仅供挑选餐厅参考，不计入实付统计。'}</p>${photos.length ? `<div class="section-head"><h2>这一顿的照片 <small>${photos.length}</small></h2></div><div class="photo-wall">${photos.map(p => photoHTML(p, `${r.name} · ${ownerName(p.user_id)}`)).join('')}</div>` : ''}${detailVisits}<button type="button" class="save-btn" style="margin-top:18px" data-edit="${esc(id)}">${r.status === 'wishlist' ? '编辑 / 我们吃过了' : '编辑记录 / 写我的评价'}</button><button type="button" class="delete-record" data-delete="${esc(id)}">删除这条记录</button><p class="help-text">只删除这一顿，不影响同店其他打卡。可到“我们 → 回收站”恢复。</p>`;
+  renderHTML($('#detailBody'), detailMarkup);
   restoreHistories('#detailBody', openedHistory);
 }
 async function setRecordDeleted(id, deleted, button) {
@@ -366,6 +387,7 @@ async function saveRecord(event) {
 async function changeSession(session) {
   const nextUser = session?.user || null;
   if (sessionKnown && user?.id === nextUser?.id) { if (nextUser) scheduleSync(); return; }
+  discardIdentity(); closeSheet('identitySheet', true);
   sessionKnown = true; authEpoch++; user = nextUser; const epoch = authEpoch;
   if (realtimeChannel) client.removeChannel(realtimeChannel); realtimeChannel = null; subscribedSpace = null; repository?.urls.clear();
   state = emptyData(); syncStatus = 'loading'; mode = nextUser ? 'cloud' : 'loading';
@@ -388,8 +410,11 @@ function refreshCloud() {
       const next = await repo.load(account);
       if (epoch !== authEpoch) return;
       const me = next.members.find(m => m.user_id === account), other = next.members.find(m => m.user_id !== account);
-      state = { ...emptyData(), ...next, nickname: me?.nickname || state.nickname || '我', partnerName: other?.nickname || 'TA' };
-      syncStatus = 'ready'; render(); subscribeRealtime(); repo.cleanup(account);
+      const incoming = { ...emptyData(), ...next, nickname: me?.nickname || state.nickname || '我', partnerName: other?.nickname || 'TA' };
+      const changed = JSON.stringify(incoming) !== JSON.stringify(state), recovered = syncStatus !== 'ready';
+      state = incoming; syncStatus = 'ready';
+      if (changed || recovered) render(); else renderHeader();
+      subscribeRealtime(); repo.cleanup(account); repo.cleanupAvatars(account);
     } catch (error) { if (epoch === authEpoch) { syncStatus = 'error'; renderHeader(); renderProfile(); } throw error; }
   };
   syncChain = syncChain.catch(() => {}).then(operation); return syncChain;
@@ -456,15 +481,80 @@ async function spaceAction(join) {
     await refreshCloud(); toast(join ? '已加入共同空间' : '空间已创建，把邀请码发给另一半');
   });
 }
+function discardIdentity() {
+  if (!identity) return;
+  identity.crop?.dispose();
+  if (identity.path) repository?.queueAvatarCleanup(identity.path, identity.ownerId);
+  identity = null;
+}
+function openIdentity() {
+  discardIdentity();
+  identity = { ownerId: selfId(), spaceId: state.space?.id, epoch: authEpoch, expectedPath: state.members.find(m => m.user_id === selfId())?.avatar_path || null, expectedName: state.nickname, expectedLocal: state.avatar_url || '', dirty: false, removed: false };
+  $('#nicknameInput').value = state.nickname || '';
+  $('#avatarPreview').innerHTML = avatarHTML(avatarURL(selfId()), state.nickname);
+  $('#avatarPreview').classList.remove('hidden'); $('#avatarCrop').classList.add('hidden'); $('#avatarControls').classList.add('hidden');
+  $('#avatarMessage').textContent = ''; $('#avatarInput').value = '';
+  $('#avatarPrivacy').textContent = mode === 'cloud' ? '头像仅在你们的私有空间内使用；先加入空间即可保存。' : '当前为本机模式，头像仅保存在这台设备；不会自动上传。';
+}
+function lockIdentity(locked) { $$('#identitySheet input, #identitySheet button').forEach(el => { el.disabled = locked; }); }
+async function chooseAvatar(file) {
+  if (!file || !identity || avatarBusy || profileSaving) return;
+  const draft = identity; avatarBusy = true; lockIdentity(true); $('#avatarMessage').textContent = '正在处理照片…';
+  try {
+    const crop = await loadAvatar(file);
+    if (identity !== draft || draft.epoch !== authEpoch) { crop.dispose(); return; }
+    draft.crop?.dispose(); draft.crop = crop; draft.removed = false; draft.dirty = true;
+    $('#avatarZoom').value = '1'; $('#avatarX').value = $('#avatarY').value = '.5';
+    $('#avatarPreview').classList.add('hidden'); $('#avatarCrop').classList.remove('hidden'); $('#avatarControls').classList.remove('hidden');
+    updateAvatarCrop(); $('#avatarMessage').textContent = '预览已就绪，调整好后点击“保存头像与昵称”。';
+  } catch (error) { if (identity === draft) $('#avatarMessage').textContent = friendly(error); }
+  finally { avatarBusy = false; lockIdentity(false); $('#avatarInput').value = ''; }
+}
+function invalidateAvatarUpload() {
+  if (!identity) return;
+  if (identity.path) repository?.queueAvatarCleanup(identity.path, identity.ownerId);
+  identity.path = null; identity.file = null; identity.uploaded = false;
+}
+function updateAvatarCrop() {
+  if (!identity?.crop) return;
+  invalidateAvatarUpload(); identity.dirty = true;
+  drawAvatar($('#avatarCrop'), identity.crop.image, Number($('#avatarZoom').value), Number($('#avatarX').value), Number($('#avatarY').value));
+  $('#avatarZoomValue').textContent = `${Number($('#avatarZoom').value).toFixed(1)}×`;
+}
+function removeAvatar() {
+  if (!identity || profileSaving || avatarBusy) return;
+  invalidateAvatarUpload(); identity.crop?.dispose(); identity.crop = null; identity.removed = true; identity.dirty = true;
+  $('#avatarPreview').innerHTML = avatarHTML('', $('#nicknameInput').value); $('#avatarPreview').classList.remove('hidden');
+  $('#avatarCrop').classList.add('hidden'); $('#avatarControls').classList.add('hidden');
+  $('#avatarMessage').textContent = '保存后将恢复为昵称头像。';
+}
 async function saveNickname() {
-  const name = $('#nicknameInput').value.trim(); if (!name || name.length > 40) return toast('请输入 1–40 字的昵称');
-  await buttonAction($('#saveNickname'), async () => {
-    if (mode === 'cloud') {
-      if (!state.space) throw new Error('请先加入情侣空间，再设置昵称');
-      const { error } = await client.from('space_members').update({ nickname: name }).eq('space_id', state.space.id).eq('user_id', user.id); if (error) throw error; await refreshCloud();
-    } else { const epoch = authEpoch, next = await mutateLocal(data => { data.nickname = name; }, state); if (epoch !== authEpoch) return; state = next; render(); }
-    closeSheet('identitySheet'); toast('昵称已保存');
-  });
+  if (!identity || avatarBusy || profileSaving || mode === 'loading') return;
+  const draft = identity, name = $('#nicknameInput').value.trim(), operationMode = mode;
+  if (!name || name.length > 40) return toast('请输入 1–40 字的昵称');
+  profileSaving = true; lockIdentity(true); $('#avatarMessage').textContent = '正在保存…';
+  try {
+    if (draft.crop && !draft.file) draft.file = await avatarFile($('#avatarCrop'));
+    if (draft.epoch !== authEpoch) return;
+    if (operationMode === 'cloud') {
+      if (!draft.spaceId) throw new Error('请先加入情侣空间，再设置云端头像');
+      if (!navigator.onLine) throw new Error('当前离线，照片已保留，请联网后重试保存');
+      await repository.saveProfile(draft, name, draft.ownerId);
+      if (draft.epoch !== authEpoch) return;
+      draft.path = null; discardIdentity(); closeSheet('identitySheet', true);
+      try { await refreshCloud(); } catch { toast('头像和昵称已保存，显示同步待重试，请点右上角刷新', 6000); return; }
+    } else {
+      const url = draft.removed ? '' : draft.file ? await blobDataURL(draft.file) : draft.expectedLocal;
+      const next = await mutateLocal(data => {
+        if (data.nickname !== draft.expectedName || (data.avatar_url || '') !== draft.expectedLocal) throw new Error('头像或昵称已在另一页面修改，请关闭后重新打开设置');
+        data.nickname = name; data.avatar_url = url;
+      }, state);
+      if (draft.epoch !== authEpoch) return;
+      state = next; discardIdentity(); closeSheet('identitySheet', true); render();
+    }
+    toast('头像和昵称已保存');
+  } catch (error) { if (identity === draft) $('#avatarMessage').textContent = `${friendly(error)}。本次修改仍保留，可重试。`; }
+  finally { profileSaving = false; lockIdentity(false); }
 }
 async function refreshManual() {
   await buttonAction($('#refreshBtn'), async () => {
@@ -481,6 +571,14 @@ async function copyInvite() {
 async function exportBackup() {
   await buttonAction($('#exportBtn'), async () => {
     const snapshot = structuredClone(state), exportSelf = selfId(); let unavailable = 0;
+    snapshot.avatar_url = avatarURL(exportSelf) || '';
+    snapshot.partner_avatar_url = avatarURL(state.members.find(m => m.user_id !== exportSelf)?.user_id || 'local-partner') || '';
+    for (const key of ['avatar_url', 'partner_avatar_url']) {
+      if (!snapshot[key] || snapshot[key].startsWith('data:')) continue;
+      try { const res = await fetch(snapshot[key]); if (!res.ok) throw new Error('Missing avatar'); snapshot[key] = await blobDataURL(await res.blob()); }
+      catch { snapshot[key] = ''; unavailable++; }
+    }
+    snapshot.members.forEach(m => { delete m.avatar_url; delete m.avatar_path; });
     for (const p of snapshot.photos) {
       try { if (!p.url) throw new Error('Missing photo'); if (!p.url.startsWith('data:')) { const res = await fetch(p.url); if (!res.ok) throw new Error('Missing photo'); p.url = await blobDataURL(await res.blob()); } }
       catch { p.url = ''; p.unavailable = true; unavailable++; }
@@ -506,6 +604,8 @@ async function importBackup(file) {
       data.trash = merge(data.trash, imported.trash.filter(r => !knownRecords.has(r.id)), r => r.id);
       data.reviews = merge(data.reviews, imported.reviews, r => `${r.restaurant_id}:${r.user_id}`);
       data.photos = merge(data.photos, imported.photos, p => p.id);
+      if (!data.avatar_url) data.avatar_url = imported.avatar_url;
+      if (!data.partner_avatar_url) data.partner_avatar_url = imported.partner_avatar_url;
     }, state);
     if (epoch !== authEpoch) return; state = next; render(); toast('备份已合并到本机，原有同编号记录保持不变');
   } catch (error) { toast(friendly(error), 6500); } finally { $('#importInput').value = ''; }
@@ -573,6 +673,7 @@ $$('.setting-row[data-open]').forEach(row => { row.setAttribute('role', 'button'
 $$('.sheet-wrap').forEach(wrap => wrap.addEventListener('click', event => { if (event.target === wrap) closeSheet(wrap.id); }));
 $('#mainAdd').onclick = () => openEditor(); $('#syncBtn').onclick = () => openSheet('cloudSheet'); $('#refreshBtn').onclick = refreshManual;
 $('#searchInput').oninput = renderRecords; $('#recordSort').onchange = renderRecords;
+$('#searchInput').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); event.target.blur(); } };
 $('#recordPlace').onchange = selectPlace;
 $('#recordForm').onsubmit = saveRecord;
 $('#recordForm').addEventListener('input', event => {
@@ -581,15 +682,20 @@ $('#recordForm').addEventListener('input', event => {
   if (event.target.dataset.rate) { const input = event.target; if (Number(input.value) > 0 && Number(input.value) < 1) input.value = 1; $(`[data-rate-value="${input.dataset.rate}"]`).textContent = formatScore(rating(input.value)); updateOverall(); }
 });
 $('#photoInput').onchange = event => addPhotos(event.target.files);
+$('#chooseAvatar').onclick = () => $('#avatarInput').click();
+$('#avatarInput').onchange = event => chooseAvatar(event.target.files[0]);
+$('#removeAvatar').onclick = removeAvatar;
+['avatarZoom', 'avatarX', 'avatarY'].forEach(id => $('#' + id).oninput = updateAvatarCrop);
+$('#nicknameInput').oninput = () => { if (identity) identity.dirty = true; };
 ['favoriteToggle', 'againToggle'].forEach(id => $('#' + id).onclick = () => { $('#' + id).classList.toggle('on'); if (editor) editor.dirty = true; });
 $('#sendEmailCode').onclick = sendEmailCode; $('#verifyEmailCode').onclick = verifyEmailCode; $('#loginOtp').onkeydown = event => { if (event.key === 'Enter') verifyEmailCode(); };
 $('#createSpaceBtn').onclick = () => spaceAction(false); $('#joinSpaceBtn').onclick = () => spaceAction(true); $('#saveNickname').onclick = saveNickname; $('#copyInviteBtn').onclick = copyInvite;
 $('#refreshMembers').onclick = () => buttonAction($('#refreshMembers'), async () => { await refreshCloud(); toast('成员状态已更新'); });
-$('#logoutBtn').onclick = () => buttonAction($('#logoutBtn'), async () => { if (saving) throw new Error('请等待保存完成后再退出'); const { error } = await client.auth.signOut({ scope: 'local' }); if (error) throw error; await changeSession(null); closeSheet('cloudSheet'); toast('已退出此设备，切换到本机档案'); });
+$('#logoutBtn').onclick = () => buttonAction($('#logoutBtn'), async () => { if (saving || profileSaving) throw new Error('请等待保存完成后再退出'); const { error } = await client.auth.signOut({ scope: 'local' }); if (error) throw error; await changeSession(null); closeSheet('cloudSheet'); toast('已退出此设备，切换到本机档案'); });
 $('#exportBtn').onclick = exportBackup; $('#importInput').onchange = event => importBackup(event.target.files[0]);
 $('#installAppBtn').onclick = installApp; $('#closePhotoViewer').onclick = () => $('#photoViewer').classList.add('hidden');
 $('#previousPhoto').onclick = () => { galleryIndex--; renderGallery(); }; $('#nextPhoto').onclick = () => { galleryIndex++; renderGallery(); }; $('#retryPhoto').onclick = () => buttonAction($('#retryPhoto'), retryPhoto);
-window.addEventListener('beforeunload', event => { if (saving || photosBusy || editor?.dirty) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (saving || photosBusy || editor?.dirty || profileSaving || avatarBusy || identity?.dirty) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('online', () => { renderHeader(); if (user) scheduleSync(); }); window.addEventListener('offline', renderHeader);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && user && navigator.onLine) scheduleSync(); });
 // Keep visible pages current even if the WebSocket silently misses an event or reconnects.
