@@ -22,4 +22,8 @@ Windows 本机仍优先使用已安装的 Edge。CI 不复用已有本地预览�
 - 这是自动回归提示，不是完整安全审计，也不是实体安卓/iOS 设备测试。
 - 现有 GitHub Pages 发布仍独立运行。没有擅自改变发布方式或分支保护；检查失败本身不会阻止现有 Pages 自动发布。
 
-官方步骤来源：[checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1)、[setup-node v7.0.0](https://github.com/actions/setup-node/releases/tag/v7.0.0)。首次实际运行结果见 `PROJECT_LOG.md`。
+官方步骤来源：[checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1)、[setup-node v7.0.0](https://github.com/actions/setup-node/releases/tag/v7.0.0)。
+
+## 首次上线状态
+
+配置已在本地提交，本机 CI 配置读取与资源审查通过。2026-09-18 推送被 GitHub 拒绝，原因是当前 OAuth 授权缺少 `workflow` scope；工作流尚未上传，也没有 GitHub Linux 运行结果。需要用户完成相应重新授权，不能将该配置描述为已经启用。网站 2.7.0 的功能发布已完成，不受影响。后续结果记入 `PROJECT_LOG.md`。
