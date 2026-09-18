@@ -223,13 +223,20 @@ try {
   await pageA.locator('[data-nav="home"]').click(); await pageA.locator('#homeCards .food-card').filter({ hasText: '周末小馆' }).locator('.food-content').click(); await pageA.locator('[data-edit]').click();
   await expect(pageA.locator('#photoPreviews .photo-owner').filter({ hasText: 'TA 的照片' })).toHaveCount(1);
   const oldPhotoId = check(await a.from('food_photos').select('id').eq('path', path).single(), 'find old photo').id;
+  // The other member keeps the old image open while its owner replaces it.
+  await pageB.locator('#homeCards .food-card').filter({ hasText: '周末小馆' }).locator('.food-content').click();
+  await pageB.locator(`#detailBody .photo-wall [data-photo="${oldPhotoId}"]`).click(); await expect(pageB.locator('#photoViewer')).toBeVisible();
+  await expect(pageB.locator('#viewerImage')).toHaveAttribute('src', new RegExp(path.replace(/[.]/g, '\\.')));
   await pageA.locator(`[data-remove-existing="${oldPhotoId}"]`).click();
   await pageA.locator('#photoInput').setInputFiles({ name: 'replacement.jpg', mimeType: 'image/jpeg', buffer: jpeg }); await expect(pageA.locator('#photoStatus')).toContainText('已就绪');
   await pageA.locator('#saveRecordBtn').click(); await expect(pageA.locator('#editSheet')).not.toHaveClass(/open/, { timeout: 30000 });
   assert.equal(check(await a.from('food_photos').select('id').eq('path', path), 'removed photo metadata').length, 0);
   assert.equal(check(await a.from('food_photos').select('id').eq('path', bPath), 'partner photo retained').length, 1);
   await expect.poll(async () => Boolean((await a.storage.from('food-photos').createSignedUrl(path, 60)).error), { timeout: 15000 }).toBe(true);
-  console.log('PASS cloud photo replacement, ownership and storage cleanup');
+  await expect(pageB.locator(`#detailBody [data-photo="${oldPhotoId}"]`)).toHaveCount(0, { timeout: 30000 });
+  assert.ok(!(await pageB.locator('#viewerImage').getAttribute('src') || '').includes(path), 'open viewer must stop displaying removed photo');
+  await pageB.locator('#closePhotoViewer').click(); await pageB.locator('[data-close="detailSheet"]').click();
+  console.log('PASS cloud photo replacement, ownership, storage cleanup and partner open-gallery refresh');
   // Both members can archive/restore, but neither can accidentally edit a deleted post.
   const currentBeforeTrash = check(await a.from('restaurants').select('*').eq('id', id).single(), 'read version before trash');
   const photosBeforeTrash = check(await a.from('food_photos').select('id,path').eq('restaurant_id', id).order('id'), 'capture photos before trash');
@@ -289,7 +296,9 @@ try {
   const otherSpace = check(await outsider.rpc('create_space', { p_name: marker, p_nickname: '隔离账号' }), 'second isolated space'); resources.spaces.push({ id: otherSpace.id, name: marker }); await recordResources();
   assert.ok((await outsider.rpc('save_food_record', { p_restaurant: { ...restaurant, id: randomUUID(), space_id: otherSpace.id, place_id: id } })).error, 'member of another space cannot attach its visit to private place');
   const lastVisit = check(await a.from('restaurants').select('*').eq('id', revisited.id).single(), 'current revisit');
+  await pageA.locator(`#recordList [data-record="${revisited.id}"] .food-photo [data-photo]`).click(); await expect(pageA.locator('#photoViewer')).toBeVisible();
   const deletedVisit = check(await a.rpc('set_food_record_deleted', { p_id: revisited.id, p_deleted: true, p_expected_updated_at: lastVisit.updated_at }), 'delete only revisit');
+  await expect(pageA.locator('#photoViewer')).toBeHidden({ timeout: 30000 }); await expect(pageA.locator('#viewerImage')).not.toHaveAttribute('src'); await expect(pageA.locator('#viewerCaption')).toBeEmpty();
   await expect(pageA.locator('#rankList .food-card')).toHaveAttribute('data-record', id, { timeout: 30000 });
   check(await a.rpc('set_food_record_deleted', { p_id: revisited.id, p_deleted: false, p_expected_updated_at: deletedVisit.updated_at }), 'restore same place revisit');
   await expect(pageA.locator('#rankList .food-card')).toHaveAttribute('data-record', revisited.id, { timeout: 30000 });
@@ -334,7 +343,7 @@ try {
   await expect(pageA.locator('#draftBanner')).toBeHidden(); await expect(pageA.locator('#taskList')).toBeEmpty(); await expect(pageA.locator('#taskTabs')).toBeEmpty(); await expect(pageA.locator('#taskSummary')).toBeEmpty();
   for (const selector of ['#detailBody', '#memberList', '#currentInviteCode', '#avatarPreview', '#photoPreviews', '#recordPlace']) await expect(pageA.locator(selector)).toBeEmpty();
   await expect(pageA.locator('#restaurantName')).toHaveValue(''); await expect(pageA.locator('#reviewText')).toHaveValue(''); await expect(pageA.locator('#nicknameInput')).toHaveValue('');
-  assert.equal(await pageA.evaluate(async scope => (await import('/lib/drafts.js?v=2.5.0')).loadDraft(scope), `cloud:${resources.users[0]}:${space.id}`), null, 'logout removes that account draft from IndexedDB');
+  assert.equal(await pageA.evaluate(async scope => (await import('/lib/drafts.js?v=2.5.1')).loadDraft(scope), `cloud:${resources.users[0]}:${space.id}`), null, 'logout removes that account draft from IndexedDB');
   await expect(pageA.locator('#faceMe img')).toHaveCount(0); await expect(pageA.locator('#facePartner img')).toHaveCount(0);
   check(await b.rpc('save_member_profile', { p_nickname: '小晴自动同步检查', p_avatar_path: null, p_expected_avatar_path: avatarB, p_expected_nickname: '小晴自动同步检查' }), 'reset partner avatar');
   await expect(pageB.locator('#faceMe img')).toHaveCount(0, { timeout: 30000 });

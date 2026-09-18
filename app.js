@@ -1,15 +1,16 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.5.0';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.5.0';
-import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.5.0';
-import { CloudRepository } from './lib/cloud.js?v=2.5.0';
-import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.5.0';
-import { renderHTML } from './lib/dom.js?v=2.5.0';
-import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.5.0';
-import { filterRecords } from './lib/discovery.js?v=2.5.0';
-import { DiscoveryUI } from './lib/discovery-ui.js?v=2.5.0';
-import { DraftUI } from './lib/draft-ui.js?v=2.5.0';
-import { clearAccountDrafts } from './lib/drafts.js?v=2.5.0';
-import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.5.0';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.5.1';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.5.1';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.5.1';
+import { CloudRepository } from './lib/cloud.js?v=2.5.1';
+import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.5.1';
+import { renderHTML } from './lib/dom.js?v=2.5.1';
+import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.5.1';
+import { filterRecords } from './lib/discovery.js?v=2.5.1';
+import { DiscoveryUI } from './lib/discovery-ui.js?v=2.5.1';
+import { DraftUI } from './lib/draft-ui.js?v=2.5.1';
+import { clearAccountDrafts } from './lib/drafts.js?v=2.5.1';
+import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.5.1';
+import { PhotoGallery } from './lib/gallery.js?v=2.5.1';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -20,7 +21,7 @@ const CATEGORIES = ['家常菜', '川湘菜', '粤菜', '江浙菜', '东北菜'
 let state = emptyData(), user = null, client = null, repository = null;
 let mode = 'loading', syncStatus = 'loading', activePage = 'home', activeFilter = 'all', rankKey = 'value', recordView = 'places';
 let authEpoch = 0, syncChain = Promise.resolve(), syncTimer, realtimeChannel, subscribedSpace, deferredInstallPrompt;
-let editor = null, saving = false, photosBusy = false, detailId = null, gallery = [], galleryIndex = 0, cooldownUntil = 0;
+let editor = null, saving = false, photosBusy = false, detailId = null, cooldownUntil = 0;
 let toastTimer, sessionKnown = false, lastFocused;
 let identity = null, avatarBusy = false, profileSaving = false;
 let activeTask = 'mine';
@@ -115,7 +116,7 @@ function render() {
   drafts.render(); renderTasks();
   renderHeader(); renderHome(); renderRecords(); renderRank(); renderProfile(); renderTrash(); renderCategories();
   if (detailId) renderDetail(detailId);
-  if (gallery.length && !state.restaurants.some(r => r.id === gallery[galleryIndex]?.restaurant_id)) { gallery = []; $('#photoViewer').classList.add('hidden'); }
+  photoGallery.sync();
   if (editor?.original && state.trash.some(r => r.id === editor.id)) showFormMessage('这条记录已被移到回收站，请先关闭编辑并恢复记录。未保存的内容仍在此处。');
 }
 function renderCategories() {
@@ -243,26 +244,6 @@ async function setRecordDeleted(id, deleted, button) {
   }, deleted ? '正在删除…' : '正在恢复…');
 }
 function showDetail(id) { closeSheet('decisionSheet', true); closeSheet('journalSheet', true); closeSheet('tasksSheet', true); detailId = id; renderDetail(id); openSheet('detailSheet'); }
-function showGallery(id) {
-  const photo = state.photos.find(p => p.id === id); if (!photo) return;
-  gallery = state.photos.filter(p => p.restaurant_id === photo.restaurant_id); galleryIndex = gallery.findIndex(p => p.id === id);
-  $('#photoViewer').classList.remove('hidden'); renderGallery(); $('#closePhotoViewer').focus();
-}
-function renderGallery() {
-  const p = gallery[galleryIndex]; if (!p) return;
-  const img = $('#viewerImage'), url = safeImageURL(p.url);
-  img.hidden = !url; if (url) img.src = url; else img.removeAttribute('src');
-  $('#viewerCaption').textContent = `${galleryIndex + 1} / ${gallery.length} · ${ownerName(p.user_id)}${!url ? ' · 照片暂不可用，可以重新加载或补图' : ''}`;
-  $('#retryPhoto').classList.toggle('hidden', !!url || mode !== 'cloud');
-  $('#previousPhoto').disabled = galleryIndex === 0; $('#nextPhoto').disabled = galleryIndex === gallery.length - 1;
-}
-async function retryPhoto() {
-  if (!repository) return;
-  const [fresh] = await repository.signPhotos([gallery[galleryIndex]], true);
-  gallery[galleryIndex] = fresh; state.photos = state.photos.map(p => p.id === fresh.id ? fresh : p); renderGallery();
-  if (!fresh.url) toast('照片文件暂时无法读取。可在编辑记录中移除失效照片，再添加原图');
-}
-
 function openEditor(id = null, status = 'eaten', repeatId = null) {
   if (mode === 'loading') return toast('档案仍在加载，请稍候');
   if (mode === 'cloud' && (!state.space || syncStatus !== 'ready')) {
@@ -412,8 +393,7 @@ async function changeSession(session) {
   state = emptyData(); syncStatus = 'loading'; mode = nextUser ? 'cloud' : 'loading';
   if (editor && !saving) { discardEditor(); closeSheet('editSheet', true); }
   // Remove hidden private DOM too, not only the currently visible cards.
-  renderHTML($('#detailBody'), ''); gallery = []; galleryIndex = 0;
-  $('#viewerImage').removeAttribute('src'); $('#viewerCaption').textContent = '';
+  renderHTML($('#detailBody'), ''); photoGallery.close(false);
   for (const id of [...DRAFT_FIELDS, 'editId', 'nicknameInput', 'joinCode', 'newSpaceName']) $('#' + id).value = '';
   for (const id of ['photoPreviews', 'recordPlace', 'rateRows', 'extraRateRows', 'avatarPreview']) $('#' + id).replaceChildren();
   $('#avatarCrop').getContext('2d').clearRect(0, 0, $('#avatarCrop').width, $('#avatarCrop').height);
@@ -686,13 +666,16 @@ function renderTasks() {
   renderHTML($('#taskList'), rows.map(({ restaurant: r, tasks }) => `<article class="task-card" data-task-record="${esc(r.id)}"><h4>${esc(r.name)}</h4><p>${esc([r.visit_date || (r.status === 'wishlist' ? '想吃计划' : '未填日期'), r.city, r.category].filter(Boolean).join(' · '))}</p><div class="task-badges">${tasks.map(key => `<span>${labels[key]}</span>`).join('')}</div><div class="task-actions"><button type="button" class="text-btn" data-detail="${esc(r.id)}">查看这一顿</button>${activeTask === 'partner' ? '' : `<button type="button" class="secondary" data-task-edit="${esc(r.id)}">${activeTask === 'mine' || (activeTask === 'all' && tasks.includes('mine')) ? '补我的评价' : '补充记录'}</button>`}</div></article>`).join('') || '<div class="empty"><h3>这一项已经整理好</h3><p>有新的待补内容时，会自动出现在这里。</p></div>');
 }
 const discovery = new DiscoveryUI({ getState: () => state, selfId, renderHTML, esc, cardHTML, photoHTML, openSheet, closeSheet, renderRecords, switchPage, toast, getEpoch: () => authEpoch });
+const photoGallery = new PhotoGallery({ getState: () => state, getEpoch: () => authEpoch, getRepository: () => repository,
+  isCloud: () => mode === 'cloud', ownerName, toast, onError: error => toast(friendly(error)),
+  updatePhoto: photo => { state.photos = state.photos.map(p => p.id === photo.id ? photo : p); render(); } });
 const drafts = new DraftUI({ getScope: () => mode === 'local' ? 'local:local-me:' : mode === 'cloud' && state.space && user ? `cloud:${user.id}:${state.space.id}` : null,
   getEpoch: () => authEpoch, getEditor: () => !saving && !photosBusy ? editor : null, capture: captureEditorDraft, restore: restoreEditorDraft,
   lock: value => $$('#recordForm input, #recordForm button, #recordForm textarea, #recordForm select').forEach(el => el.disabled = value),
   afterStash: () => { discardEditor(); closeSheet('editSheet', true); closeSheet('detailSheet', true); switchPage('home'); }, toast, message: showFormMessage });
 document.addEventListener('click', event => {
   const target = event.target.closest('button, [data-open], [data-close], [data-filter-go], [data-go]'); if (!target || target.disabled) return;
-  if (target.dataset.photo) return showGallery(target.dataset.photo);
+  if (target.dataset.photo) return photoGallery.open(target.dataset.photo);
   if (target.dataset.taskFilter) { activeTask = target.dataset.taskFilter; return renderTasks(); }
   if (target.dataset.taskEdit) { closeSheet('tasksSheet', true); return openEditor(target.dataset.taskEdit); }
   if (target.dataset.copyPlace) { const r = state.restaurants.find(row => row.id === target.dataset.copyPlace); if (r) discovery.openCopy(r); return; }
@@ -724,13 +707,13 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('error', event => {
   const img = event.target; if (img.tagName !== 'IMG') return;
-  if (img.id === 'viewerImage') { img.hidden = true; $('#viewerCaption').textContent += ' · 加载失败，可重试'; $('#retryPhoto').classList.toggle('hidden', mode !== 'cloud'); }
+  if (img.id === 'viewerImage') photoGallery.failed();
   else if (img.dataset.image) { img.hidden = true; img.parentElement.querySelector('.photo-placeholder')?.classList.remove('hidden'); }
   else { img.hidden = true; }
 }, true);
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape') {
-    if (!$('#photoViewer').classList.contains('hidden')) $('#photoViewer').classList.add('hidden');
+    if (photoGallery.visible) photoGallery.close();
     else { const open = $$('.sheet-wrap.open').at(-1); if (open) closeSheet(open.id); }
   }
   if (['Enter', ' '].includes(event.key) && event.target.matches('[data-open]:not(button)')) { event.preventDefault(); event.target.click(); }
@@ -759,8 +742,7 @@ $('#createSpaceBtn').onclick = () => spaceAction(false); $('#joinSpaceBtn').oncl
 $('#refreshMembers').onclick = () => buttonAction($('#refreshMembers'), async () => { await refreshCloud(); toast('成员状态已更新'); });
 $('#logoutBtn').onclick = () => buttonAction($('#logoutBtn'), async () => { if (saving || profileSaving || drafts.busy) throw new Error('请等待保存完成后再退出'); await clearAccountDrafts(user?.id); const { error } = await client.auth.signOut({ scope: 'local' }); if (error) throw error; await changeSession(null); closeSheet('cloudSheet'); toast('已退出此设备，切换到本机档案'); });
 $('#exportBtn').onclick = exportBackup; $('#importInput').onchange = event => importBackup(event.target.files[0]);
-$('#installAppBtn').onclick = installApp; $('#closePhotoViewer').onclick = () => $('#photoViewer').classList.add('hidden');
-$('#previousPhoto').onclick = () => { galleryIndex--; renderGallery(); }; $('#nextPhoto').onclick = () => { galleryIndex++; renderGallery(); }; $('#retryPhoto').onclick = () => buttonAction($('#retryPhoto'), retryPhoto);
+$('#installAppBtn').onclick = installApp;
 window.addEventListener('beforeunload', event => { if (saving || photosBusy || editor?.dirty || profileSaving || avatarBusy || identity?.dirty || drafts.busy) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('online', () => { renderHeader(); if (user) scheduleSync(); }); window.addEventListener('offline', renderHeader);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && user && navigator.onLine) scheduleSync(); });
