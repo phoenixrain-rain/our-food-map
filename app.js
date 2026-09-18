@@ -1,12 +1,15 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.4.0';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.4.0';
-import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.4.0';
-import { CloudRepository } from './lib/cloud.js?v=2.4.0';
-import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.4.0';
-import { renderHTML } from './lib/dom.js?v=2.4.0';
-import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.4.0';
-import { filterRecords } from './lib/discovery.js?v=2.4.0';
-import { DiscoveryUI } from './lib/discovery-ui.js?v=2.4.0';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.5.0';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.5.0';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.5.0';
+import { CloudRepository } from './lib/cloud.js?v=2.5.0';
+import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.5.0';
+import { renderHTML } from './lib/dom.js?v=2.5.0';
+import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.5.0';
+import { filterRecords } from './lib/discovery.js?v=2.5.0';
+import { DiscoveryUI } from './lib/discovery-ui.js?v=2.5.0';
+import { DraftUI } from './lib/draft-ui.js?v=2.5.0';
+import { clearAccountDrafts } from './lib/drafts.js?v=2.5.0';
+import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.5.0';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -20,6 +23,7 @@ let authEpoch = 0, syncChain = Promise.resolve(), syncTimer, realtimeChannel, su
 let editor = null, saving = false, photosBusy = false, detailId = null, gallery = [], galleryIndex = 0, cooldownUntil = 0;
 let toastTimer, sessionKnown = false, lastFocused;
 let identity = null, avatarBusy = false, profileSaving = false;
+let activeTask = 'mine';
 const selfId = () => user?.id || 'local-me';
 const myReview = id => reviewsFor(state, id).find(r => r.user_id === selfId());
 const partnerReview = id => reviewsFor(state, id).find(r => r.user_id !== selfId());
@@ -48,6 +52,7 @@ function openSheet(id) {
   if (id === 'coupleSheet' && user) scheduleSync();
   if (id === 'installSheet') updateInstallUI();
   if (id === 'journalSheet') discovery.renderJournal();
+  if (id === 'tasksSheet') renderTasks();
 }
 function closeSheet(id, force = false) {
   if (id === 'identitySheet' && !force) {
@@ -56,7 +61,7 @@ function closeSheet(id, force = false) {
     discardIdentity();
   }
   if (id === 'editSheet' && !force) {
-    if (saving || photosBusy) return toast('正在处理，请稍候');
+    if (saving || photosBusy || drafts.busy) return toast('正在处理，请稍候');
     if (editor?.dirty && !window.confirm('放弃这次尚未保存的修改？')) return;
     discardEditor();
   }
@@ -107,6 +112,7 @@ function cardHTML(r, rank = null, grouped = false) {
 }
 function render() {
   discovery.render();
+  drafts.render(); renderTasks();
   renderHeader(); renderHome(); renderRecords(); renderRank(); renderProfile(); renderTrash(); renderCategories();
   if (detailId) renderDetail(detailId);
   if (gallery.length && !state.restaurants.some(r => r.id === gallery[galleryIndex]?.restaurant_id)) { gallery = []; $('#photoViewer').classList.add('hidden'); }
@@ -181,6 +187,8 @@ function renderProfile() {
     $('#memberStatus').textContent = state.members.length === 2 ? '两人已加入' : '等待另一半加入';
     $('#memberStatus').className = `mode-badge ${state.members.length === 2 ? 'online' : ''}`;
     renderHTML($('#memberList'), state.members.map(m => `<div class="member">${memberAvatar(m.user_id, m.nickname, 'member-avatar')}<div><strong>${esc(m.nickname)}${m.user_id === selfId() ? '（我）' : ''}</strong><small>${m.role === 'owner' ? '空间创建者' : '已加入空间'}</small></div><span>✓ 已加入</span></div>`).join('') + (state.members.length < 2 ? '<div class="member waiting"><span class="member-avatar">＋</span><div><strong>等另一半来</strong><small>把下面的邀请码发给 TA</small></div></div>' : ''));
+  } else {
+    $('#currentSpaceName').textContent = ''; $('#currentInviteCode').textContent = ''; $('#memberStatus').textContent = ''; renderHTML($('#memberList'), '');
   }
   $('#authStatus').textContent = user ? `当前账号：${user.email}。${state.space ? '已连接情侣空间。' : '登录成功，请创建或加入情侣空间。'}` : '用自己的邮箱登录，收到验证码后回到当前页面输入。';
   $('#loginForm').classList.toggle('hidden', !!user); $('#logoutBtn').classList.toggle('hidden', !user);
@@ -234,7 +242,7 @@ async function setRecordDeleted(id, deleted, button) {
     toast(deleted ? '已移入回收站，可在“我们 → 回收站”恢复' : '记录已恢复，双方评价和照片仍在');
   }, deleted ? '正在删除…' : '正在恢复…');
 }
-function showDetail(id) { closeSheet('decisionSheet', true); closeSheet('journalSheet', true); detailId = id; renderDetail(id); openSheet('detailSheet'); }
+function showDetail(id) { closeSheet('decisionSheet', true); closeSheet('journalSheet', true); closeSheet('tasksSheet', true); detailId = id; renderDetail(id); openSheet('detailSheet'); }
 function showGallery(id) {
   const photo = state.photos.find(p => p.id === id); if (!photo) return;
   gallery = state.photos.filter(p => p.restaurant_id === photo.restaurant_id); galleryIndex = gallery.findIndex(p => p.id === id);
@@ -329,7 +337,7 @@ async function addPhotos(files) {
   if (!editor || photosBusy || saving) return;
   const draft = editor, capacity = Math.max(0, MAX_PHOTOS - existingEditorPhotos().filter(p => p.user_id === selfId()).length - editor.added.length);
   if (!capacity) return toast(`每人每次打卡最多 ${MAX_PHOTOS} 张照片，先移除几张再添加`);
-  photosBusy = true; $('#saveRecordBtn').disabled = true; $('#photoInput').disabled = true;
+  photosBusy = true; $('#saveRecordBtn').disabled = true; $('#photoInput').disabled = true; $('#stashDraft').disabled = true;
   const selected = [...files].slice(0, capacity), errors = [];
   for (let i = 0; i < selected.length; i++) {
     $('#photoStatus').textContent = `正在处理照片 ${i + 1}/${selected.length}…`;
@@ -341,7 +349,7 @@ async function addPhotos(files) {
       draft.added.push({ file, fingerprint, preview: URL.createObjectURL(file), path: null, uploaded: false }); draft.dirty = true; renderEditorPhotos();
     } catch (error) { errors.push(`${selected[i].name}：${friendly(error)}`); }
   }
-  photosBusy = false; $('#saveRecordBtn').disabled = false; $('#photoInput').disabled = false; $('#photoInput').value = '';
+  photosBusy = false; $('#saveRecordBtn').disabled = false; $('#photoInput').disabled = false; $('#stashDraft').disabled = false; $('#photoInput').value = '';
   $('#photoStatus').textContent = errors.length ? errors.join('；') : `${draft.added.length} 张新照片已就绪，点击底部保存。${files.length > capacity ? `最多还能添加 ${capacity} 张，本次其余照片未添加。` : ''}`;
 }
 function collectDraft() {
@@ -353,13 +361,13 @@ function collectDraft() {
   return { restaurant, review: hasReview ? review : null, added: editor.added, removed: [...editor.removed], expected: editor.original?.updated_at };
 }
 async function saveRecord(event) {
-  event.preventDefault(); if (!editor || saving || photosBusy) return;
+  event.preventDefault(); if (!editor || saving || photosBusy || drafts.busy) return;
   if (editor.scope !== `${mode}:${selfId()}:${state.space?.id || ''}`) return showFormMessage('登录状态已变化，请重新打开记录再保存');
   if (mode === 'cloud' && !navigator.onLine) return showFormMessage('当前离线，内容仍保留。恢复网络后再保存');
   let draft; try { draft = collectDraft(); } catch (error) { showFormMessage(friendly(error)); return; }
   if (editor.original && (editor.original.place_id || editor.original.id) !== draft.restaurant.place_id && !window.confirm('确定调整这一次打卡的店铺归属？\n只移动这一顿，双方评价与照片保留，不修改其他打卡。')) return;
   saving = true; showFormMessage(); $$('#recordForm input, #recordForm button, #recordForm textarea, #recordForm select').forEach(el => el.disabled = true);
-  const epoch = authEpoch, saveMode = mode, updateProgress = text => $('#saveRecordBtn').textContent = text;
+  const epoch = authEpoch, saveMode = mode, savedEditor = editor, updateProgress = text => $('#saveRecordBtn').textContent = text;
   try {
     if (mode === 'cloud') await repository.save(draft, user.id, updateProgress);
     else {
@@ -379,12 +387,14 @@ async function saveRecord(event) {
       }, state);
       if (epoch === authEpoch) state = next;
     }
-    editor.added.forEach(p => URL.revokeObjectURL(p.preview)); editor = null;
+    const draftClean = await drafts.committed(savedEditor.scope, savedEditor.id, savedEditor.draftRevision);
+    savedEditor.added.forEach(p => URL.revokeObjectURL(p.preview)); editor = null;
     closeSheet('editSheet', true);
     if (epoch !== authEpoch) { render(); toast(saveMode === 'cloud' ? '记录已保存到原账号空间，当前登录状态已变化' : '本机记录已保存，当前登录状态已变化'); }
     else if (mode === 'cloud') {
       try { await refreshCloud(); toast('记录、评价和照片已保存'); } catch { toast('保存已成功，列表同步暂时失败，请点击 ↻ 刷新', 6000); }
     } else { render(); toast('已保存到本机档案'); }
+    if (!draftClean && epoch === authEpoch) toast('记录已保存，但旧草稿清理未成功，可在首页删除草稿', 7000);
   } catch (error) { showFormMessage(`${friendly(error)}。本次内容仍在，可重试保存。`); }
   finally { saving = false; $$('#recordForm input, #recordForm button, #recordForm textarea, #recordForm select').forEach(el => el.disabled = false); $('#saveRecordBtn').textContent = mode === 'cloud' ? '保存到我们的档案' : '保存到本机档案'; }
 }
@@ -392,12 +402,23 @@ async function saveRecord(event) {
 async function changeSession(session) {
   const nextUser = session?.user || null;
   if (sessionKnown && user?.id === nextUser?.id) { if (nextUser) scheduleSync(); return; }
+  const previousUser = user?.id;
   discardIdentity(); closeSheet('identitySheet', true);
+  drafts.reset(); activeTask = 'mine'; closeSheet('tasksSheet', true); renderHTML($('#taskList'), ''); renderHTML($('#taskTabs'), ''); $('#taskSummary').textContent = '';
   discovery.reset(); activeFilter = 'all'; recordView = 'places'; $('#recordSort').value = 'visit';
   sessionKnown = true; authEpoch++; user = nextUser; const epoch = authEpoch;
+  if (previousUser && previousUser !== nextUser?.id) clearAccountDrafts(previousUser).catch(() => toast('退出已完成，但本机旧草稿清理未成功，请重新登录后在首页删除草稿', 7000));
   if (realtimeChannel) client.removeChannel(realtimeChannel); realtimeChannel = null; subscribedSpace = null; repository?.urls.clear();
   state = emptyData(); syncStatus = 'loading'; mode = nextUser ? 'cloud' : 'loading';
   if (editor && !saving) { discardEditor(); closeSheet('editSheet', true); }
+  // Remove hidden private DOM too, not only the currently visible cards.
+  renderHTML($('#detailBody'), ''); gallery = []; galleryIndex = 0;
+  $('#viewerImage').removeAttribute('src'); $('#viewerCaption').textContent = '';
+  for (const id of [...DRAFT_FIELDS, 'editId', 'nicknameInput', 'joinCode', 'newSpaceName']) $('#' + id).value = '';
+  for (const id of ['photoPreviews', 'recordPlace', 'rateRows', 'extraRateRows', 'avatarPreview']) $('#' + id).replaceChildren();
+  $('#avatarCrop').getContext('2d').clearRect(0, 0, $('#avatarCrop').width, $('#avatarCrop').height);
+  $('#photoInput').value = ''; $('#avatarInput').value = ''; $('#favoriteToggle').classList.remove('on'); $('#againToggle').classList.remove('on');
+  $('#photoStatus').textContent = ''; $('#avatarMessage').textContent = ''; $('#overallScore').textContent = '未评'; showFormMessage();
   detailId = null; closeSheet('detailSheet', true); $('#photoViewer').classList.add('hidden'); render();
   if (nextUser) {
     try { await refreshCloud(); } catch { /* Banner provides retry. */ }
@@ -631,10 +652,49 @@ async function installApp() {
   await deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; updateInstallUI();
 }
 
+const DRAFT_FIELDS = ['restaurantName', 'city', 'category', 'address', 'visitDate', 'price', 'tags', 'favoriteDish', 'reviewText'];
+function captureEditorDraft() {
+  if (!editor || saving || photosBusy) throw new Error('照片或记录仍在处理，请稍候');
+  return { id: editor.id, original: editor.original, status: editor.status, placeId: editor.placeId, newPlaceId: editor.newPlaceId, createPlace: editor.createPlace,
+    fields: Object.fromEntries(DRAFT_FIELDS.map(id => [id, $('#' + id).value])), rates: Object.fromEntries(DIMS.map(([key]) => [key, $(`[data-rate="${key}"]`).value])),
+    favorite: $('#favoriteToggle').classList.contains('on'), again: $('#againToggle').classList.contains('on'), removed: [...editor.removed], added: editor.added.map(p => ({ file: p.file, fingerprint: p.fingerprint })) };
+}
+function restoreEditorDraft(saved) {
+  if (editor?.dirty && !window.confirm('放弃当前编辑内容，继续已暂存的草稿？')) return;
+  const draft = saved.payload, current = state.restaurants.find(r => r.id === draft.id);
+  openEditor(current?.id || null, draft.status); if (!editor) return;
+  Object.assign(editor, { id: draft.id, original: draft.original, placeId: draft.placeId, newPlaceId: draft.newPlaceId, createPlace: draft.createPlace, removed: new Set(draft.removed), dirty: true, draftRevision: saved.revision });
+  editor.added = draft.added.map(p => ({ file: p.file, fingerprint: p.fingerprint, preview: URL.createObjectURL(p.file), path: null, uploaded: false }));
+  $('#editId').value = draft.id;
+  if (!draft.createPlace && ![...$('#recordPlace').options].some(o => o.value === draft.placeId)) $('#recordPlace').add(new Option('原草稿关联的店铺（当前不可用）', draft.placeId));
+  $('#recordPlace').value = draft.createPlace ? 'new' : draft.placeId;
+  DRAFT_FIELDS.forEach(id => $('#' + id).value = draft.fields[id] || '');
+  DIMS.forEach(([key]) => { const value = rating(draft.rates?.[key]); $(`[data-rate="${key}"]`).value = value ?? 0; $(`[data-rate-value="${key}"]`).textContent = formatScore(value); });
+  $('#favoriteToggle').classList.toggle('on', !!draft.favorite); $('#againToggle').classList.toggle('on', !!draft.again);
+  setStatus(draft.status, false); updateOverall(); renderEditorPhotos(); updatePlaceHint();
+  $('#editTitle').textContent = '继续未完成的草稿';
+  const stale = draft.original && (!current || draft.original.updated_at !== current.updated_at);
+  showFormMessage(stale ? '原记录已变化或被删除，草稿内容已恢复供查看，但不能直接覆盖新版本。请保留需要的文字，重新打开最新记录后修改。' : '已恢复本机草稿。点击正式保存后才会写入档案；关闭编辑不会删除这份暂存版本。');
+}
+function renderTasks() {
+  const report = recordTasks(state, selfId()), labels = Object.fromEntries(TASK_KINDS);
+  $('#taskHomeSummary').textContent = report.rows.length ? `${report.rows.length} 条待完善 · ${report.counts.mine} 次等我评分` : '食记已整理好，去回味下一顿 ›';
+  if (!$('#tasksSheet').classList.contains('open')) return;
+  renderHTML($('#taskTabs'), [['all', '全部'], ...TASK_KINDS].map(([key, title]) => `<button type="button" data-task-filter="${key}" aria-pressed="${activeTask === key}" class="${activeTask === key ? 'on' : ''}">${title}<b>${key === 'all' ? report.rows.length : report.counts[key]}</b></button>`).join(''));
+  const rows = report.rows.filter(row => activeTask === 'all' || row.tasks.includes(activeTask));
+  $('#taskSummary').textContent = `${rows.length} 条记录。每条可有多个待补项；人均 0 元算已填写。只提示、不代填、不向对方发送消息。照片提示包含暂时无法签名的情况，可先刷新重试。`;
+  renderHTML($('#taskList'), rows.map(({ restaurant: r, tasks }) => `<article class="task-card" data-task-record="${esc(r.id)}"><h4>${esc(r.name)}</h4><p>${esc([r.visit_date || (r.status === 'wishlist' ? '想吃计划' : '未填日期'), r.city, r.category].filter(Boolean).join(' · '))}</p><div class="task-badges">${tasks.map(key => `<span>${labels[key]}</span>`).join('')}</div><div class="task-actions"><button type="button" class="text-btn" data-detail="${esc(r.id)}">查看这一顿</button>${activeTask === 'partner' ? '' : `<button type="button" class="secondary" data-task-edit="${esc(r.id)}">${activeTask === 'mine' || (activeTask === 'all' && tasks.includes('mine')) ? '补我的评价' : '补充记录'}</button>`}</div></article>`).join('') || '<div class="empty"><h3>这一项已经整理好</h3><p>有新的待补内容时，会自动出现在这里。</p></div>');
+}
 const discovery = new DiscoveryUI({ getState: () => state, selfId, renderHTML, esc, cardHTML, photoHTML, openSheet, closeSheet, renderRecords, switchPage, toast, getEpoch: () => authEpoch });
+const drafts = new DraftUI({ getScope: () => mode === 'local' ? 'local:local-me:' : mode === 'cloud' && state.space && user ? `cloud:${user.id}:${state.space.id}` : null,
+  getEpoch: () => authEpoch, getEditor: () => !saving && !photosBusy ? editor : null, capture: captureEditorDraft, restore: restoreEditorDraft,
+  lock: value => $$('#recordForm input, #recordForm button, #recordForm textarea, #recordForm select').forEach(el => el.disabled = value),
+  afterStash: () => { discardEditor(); closeSheet('editSheet', true); closeSheet('detailSheet', true); switchPage('home'); }, toast, message: showFormMessage });
 document.addEventListener('click', event => {
   const target = event.target.closest('button, [data-open], [data-close], [data-filter-go], [data-go]'); if (!target || target.disabled) return;
   if (target.dataset.photo) return showGallery(target.dataset.photo);
+  if (target.dataset.taskFilter) { activeTask = target.dataset.taskFilter; return renderTasks(); }
+  if (target.dataset.taskEdit) { closeSheet('tasksSheet', true); return openEditor(target.dataset.taskEdit); }
   if (target.dataset.copyPlace) { const r = state.restaurants.find(row => row.id === target.dataset.copyPlace); if (r) discovery.openCopy(r); return; }
   if (target.dataset.detail) return showDetail(target.dataset.detail);
   if (target.dataset.repeat) return beginRepeat(target.dataset.repeat);
@@ -673,7 +733,7 @@ document.addEventListener('keydown', event => {
     if (!$('#photoViewer').classList.contains('hidden')) $('#photoViewer').classList.add('hidden');
     else { const open = $$('.sheet-wrap.open').at(-1); if (open) closeSheet(open.id); }
   }
-  if (event.key === 'Enter' && event.target.matches('[data-open]')) event.target.click();
+  if (['Enter', ' '].includes(event.key) && event.target.matches('[data-open]:not(button)')) { event.preventDefault(); event.target.click(); }
 });
 $$('.setting-row[data-open]').forEach(row => { row.setAttribute('role', 'button'); row.tabIndex = 0; });
 $$('.sheet-wrap').forEach(wrap => wrap.addEventListener('click', event => { if (event.target === wrap) closeSheet(wrap.id); }));
@@ -697,11 +757,11 @@ $('#nicknameInput').oninput = () => { if (identity) identity.dirty = true; };
 $('#sendEmailCode').onclick = sendEmailCode; $('#verifyEmailCode').onclick = verifyEmailCode; $('#loginOtp').onkeydown = event => { if (event.key === 'Enter') verifyEmailCode(); };
 $('#createSpaceBtn').onclick = () => spaceAction(false); $('#joinSpaceBtn').onclick = () => spaceAction(true); $('#saveNickname').onclick = saveNickname; $('#copyInviteBtn').onclick = copyInvite;
 $('#refreshMembers').onclick = () => buttonAction($('#refreshMembers'), async () => { await refreshCloud(); toast('成员状态已更新'); });
-$('#logoutBtn').onclick = () => buttonAction($('#logoutBtn'), async () => { if (saving || profileSaving) throw new Error('请等待保存完成后再退出'); const { error } = await client.auth.signOut({ scope: 'local' }); if (error) throw error; await changeSession(null); closeSheet('cloudSheet'); toast('已退出此设备，切换到本机档案'); });
+$('#logoutBtn').onclick = () => buttonAction($('#logoutBtn'), async () => { if (saving || profileSaving || drafts.busy) throw new Error('请等待保存完成后再退出'); await clearAccountDrafts(user?.id); const { error } = await client.auth.signOut({ scope: 'local' }); if (error) throw error; await changeSession(null); closeSheet('cloudSheet'); toast('已退出此设备，切换到本机档案'); });
 $('#exportBtn').onclick = exportBackup; $('#importInput').onchange = event => importBackup(event.target.files[0]);
 $('#installAppBtn').onclick = installApp; $('#closePhotoViewer').onclick = () => $('#photoViewer').classList.add('hidden');
 $('#previousPhoto').onclick = () => { galleryIndex--; renderGallery(); }; $('#nextPhoto').onclick = () => { galleryIndex++; renderGallery(); }; $('#retryPhoto').onclick = () => buttonAction($('#retryPhoto'), retryPhoto);
-window.addEventListener('beforeunload', event => { if (saving || photosBusy || editor?.dirty || profileSaving || avatarBusy || identity?.dirty) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (saving || photosBusy || editor?.dirty || profileSaving || avatarBusy || identity?.dirty || drafts.busy) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('online', () => { renderHeader(); if (user) scheduleSync(); }); window.addEventListener('offline', renderHeader);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && user && navigator.onLine) scheduleSync(); });
 // Keep visible pages current even if the WebSocket silently misses an event or reconnects.

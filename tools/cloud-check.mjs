@@ -7,7 +7,7 @@ import { mkdir, writeFile, unlink } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 const project = 'ednkwzwxcowxboxmptvs', url = `https://${project}.supabase.co`;
 const publishable = 'sb_publishable_gWqoh1ETeyGIxYMtNywdeg_mWQOOj3m';
-const run = randomUUID(), marker = `codex-check-${run}`, resources = { run, users: [], spaces: [] };
+const run = randomUUID(), marker = `codex-check-${run}`, resources = { run, users: [], spaces: [], pendingEmails: [] };
 const output = execFileSync('cmd.exe', ['/d', '/s', '/c', `npx --yes supabase@latest projects api-keys --project-ref ${project} --reveal -o json`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 let parsed;
 try { parsed = JSON.parse(output.slice(output.search(/[\[{]/))); } catch { throw new Error('Could not read authorized project key response'); }
@@ -32,7 +32,13 @@ const before = await counts();
 const check = (result, label) => { if (result.error) throw new Error(`${label}: ${result.error.message}`); return result.data; };
 async function recordResources() { await writeFile(resourceFile, JSON.stringify(resources, null, 2)); }
 async function objectsUnder(prefix, bucket = 'food-photos') {
-  const listed = check(await admin.storage.from(bucket).list(prefix, { limit: 1000 }), 'list test storage');
+  let response;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    response = await admin.storage.from(bucket).list(prefix, { limit: 1000 });
+    if (!response.error || !/fetch|network|timeout/i.test(response.error.message)) break;
+    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+  }
+  const listed = check(response, 'list test storage');
   const paths = [];
   for (const item of listed) {
     const path = `${prefix}/${item.name}`;
@@ -43,8 +49,9 @@ async function objectsUnder(prefix, bucket = 'food-photos') {
 try {
   for (let i = 0; i < 3; i++) {
     const password = randomBytes(24).toString('base64url'), email = `food-map-check-${run}-${i}@example.invalid`;
+    resources.pendingEmails.push(email); await recordResources();
     const { user } = check(await admin.auth.admin.createUser({ email, password, email_confirm: true, user_metadata: { purpose: marker } }), 'create isolated test account');
-    resources.users.push(user.id); await recordResources();
+    resources.users.push(user.id); resources.pendingEmails = resources.pendingEmails.filter(value => value !== email); await recordResources();
     const c = createClient(url, publishable, options), signed = check(await c.auth.signInWithPassword({ email, password }), 'authenticate test account');
     clients.push(c); sessions.push(signed.session);
   }
@@ -147,7 +154,15 @@ try {
   await expect.poll(() => pageA.locator('#homeCards img').first().evaluate(img => img.naturalWidth), { timeout: 15000 }).toBeGreaterThan(0);
   await expect.poll(() => pageA.locator('#faceMe img').evaluate(img => img.naturalWidth), { timeout: 15000 }).toBeGreaterThan(0);
   await expect.poll(() => pageB.locator('#facePartner img').evaluate(img => img.naturalWidth), { timeout: 15000 }).toBeGreaterThan(0);
-  await pageA.evaluate(() => { window.stablePhoto = document.querySelector('#homeCards img'); window.photoLoads = 0; window.stablePhoto.addEventListener('load', () => window.photoLoads++); });
+  await pageA.evaluate(async () => {
+    const photo = document.querySelector('#homeCards img'); await photo.decode();
+    // naturalWidth alone can become nonzero before the initial load event is dispatched.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    window.stablePhoto = photo; window.photoLoads = 0; window.photoTrace = [];
+    const initialSource = photo.src;
+    photo.addEventListener('load', () => { window.photoLoads++; window.photoTrace.push({ event: 'load', sourceChanged: photo.src !== initialSource, connected: photo.isConnected }); });
+    new MutationObserver(records => { for (const r of records) window.photoTrace.push({ event: 'attribute', name: r.attributeName, sourceChanged: photo.src !== initialSource }); }).observe(photo, { attributes: true });
+  });
   await pageA.locator('#faceMe').click();
   await pageA.locator('#avatarInput').setInputFiles({ name: 'portrait.jpg', mimeType: 'image/jpeg', buffer: jpeg });
   await expect(pageA.locator('#avatarMessage')).toContainText('预览已就绪');
@@ -169,7 +184,7 @@ try {
   await expect.poll(() => pageB.locator('#facePartner img').evaluate(img => img.naturalWidth), { timeout: 15000 }).toBe(512);
   await expect.poll(async () => !!(await a.storage.from('food-avatars').createSignedUrl(avatarPath, 60)).error, { timeout: 20000 }).toBe(true);
   assert.equal(await pageA.evaluate(() => window.stablePhoto === document.querySelector('#homeCards img')), true);
-  assert.equal(await pageA.evaluate(() => window.photoLoads), 0);
+  assert.equal(await pageA.evaluate(() => window.photoLoads), 0, JSON.stringify(await pageA.evaluate(() => window.photoTrace)));
   // Several background refresh triggers must neither replace nor re-download an unchanged photo.
   for (let i = 0; i < 3; i++) { await pageA.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await pageA.waitForTimeout(1200); }
   assert.equal(await pageA.evaluate(() => window.stablePhoto === document.querySelector('#homeCards img')), true); assert.equal(await pageA.evaluate(() => window.photoLoads), 0);
@@ -300,10 +315,26 @@ try {
   await expect(pageA.locator('#placeCopyText')).toHaveValue(/周末小馆/); assert.ok(!(await pageA.locator('#placeCopyText').inputValue()).includes(space.invite_code));
   await pageA.locator('[data-close="placeCopySheet"]').click(); await pageA.locator('[data-close="detailSheet"]').click();
   console.log('PASS private monthly report live changes, per-place dinner choices, city/photo filters and sanitized restaurant copy');
+  await pageA.locator('[data-nav="home"]').click(); await pageA.locator('.task-home').click(); await pageA.locator('[data-task-filter="partner"]').click();
+  await expect(pageA.locator('#taskList [data-task-edit]')).toHaveCount(0); await expect(pageA.locator('#taskSummary')).toContainText('不向对方发送消息'); await pageA.locator('[data-close="tasksSheet"]').click();
+  const storageBeforeDraft = (await objectsUnder(space.id)).length;
+  await pageA.locator('#mainAdd').click(); await pageA.locator('#restaurantName').fill('只在本机的云端草稿'); await pageA.locator('#reviewText').fill('未发表的草稿文字'); await pageA.locator('#photoInput').setInputFiles({ name: 'draft.jpg', mimeType: 'image/jpeg', buffer: jpeg }); await expect(pageA.locator('#photoStatus')).toContainText('已就绪');
+  await pageA.locator('#stashDraft').click(); await expect(pageA.locator('#draftBanner')).toBeVisible(); await expect(pageA.locator('#editSheet')).not.toHaveClass(/open/);
+  assert.equal(check(await a.from('restaurants').select('id').eq('space_id', space.id).eq('name', '只在本机的云端草稿'), 'draft must not create a cloud visit').length, 0);
+  assert.equal((await objectsUnder(space.id)).length, storageBeforeDraft, 'stashing must not upload a photo'); await expect(pageB.locator('#draftBanner')).toBeHidden();
+  await pageA.reload(); await expect(pageA.locator('#helloLine')).toContainText('已同步', { timeout: 30000 }); await expect(pageA.locator('#draftBanner')).toBeVisible(); await pageA.locator('#resumeDraft').click(); await expect(pageA.locator('#reviewText')).toHaveValue('未发表的草稿文字');
+  await expect.poll(() => pageA.locator('#photoPreviews img').evaluate(img => img.naturalWidth)).toBeGreaterThan(0); await pageA.locator('#saveRecordBtn').click(); await expect(pageA.locator('#editSheet')).not.toHaveClass(/open/, { timeout: 30000 }); await expect(pageA.locator('#draftBanner')).toBeHidden();
+  await expect(pageB.locator('#homeCards')).toContainText('只在本机的云端草稿', { timeout: 30000 });
+  await pageA.locator('#mainAdd').click(); await pageA.locator('#restaurantName').fill('退出时应清除的草稿'); await pageA.locator('#stashDraft').click(); await expect(pageA.locator('#draftBanner')).toBeVisible();
+  console.log('PASS cloud-account draft stays device-local with photo, reload/resume and explicit publish sync to partner, task inbox preserves reviewer ownership');
   await pageA.locator('[data-nav="profile"]').click(); await pageA.locator('[data-open="cloud"]').click(); await pageA.locator('#logoutBtn').click(); await expect(pageA.locator('#helloLine')).toContainText('本机档案', { timeout: 20000 });
   await expect(pageA.locator('#homeCards .food-card')).toHaveCount(0); assert.deepEqual(browserErrors, []);
   for (const selector of ['#journalMeals', '#journalPhotos', '#journalStats', '#decisionResult', '#decisionCount', '#journalPriceNote']) await expect(pageA.locator(selector)).toBeEmpty();
   await expect(pageA.locator('#filterCity option')).toHaveCount(1); await expect(pageA.locator('#decisionCity option')).toHaveCount(1); await expect(pageA.locator('#placeCopyText')).toHaveValue('');
+  await expect(pageA.locator('#draftBanner')).toBeHidden(); await expect(pageA.locator('#taskList')).toBeEmpty(); await expect(pageA.locator('#taskTabs')).toBeEmpty(); await expect(pageA.locator('#taskSummary')).toBeEmpty();
+  for (const selector of ['#detailBody', '#memberList', '#currentInviteCode', '#avatarPreview', '#photoPreviews', '#recordPlace']) await expect(pageA.locator(selector)).toBeEmpty();
+  await expect(pageA.locator('#restaurantName')).toHaveValue(''); await expect(pageA.locator('#reviewText')).toHaveValue(''); await expect(pageA.locator('#nicknameInput')).toHaveValue('');
+  assert.equal(await pageA.evaluate(async scope => (await import('/lib/drafts.js?v=2.5.0')).loadDraft(scope), `cloud:${resources.users[0]}:${space.id}`), null, 'logout removes that account draft from IndexedDB');
   await expect(pageA.locator('#faceMe img')).toHaveCount(0); await expect(pageA.locator('#facePartner img')).toHaveCount(0);
   check(await b.rpc('save_member_profile', { p_nickname: '小晴自动同步检查', p_avatar_path: null, p_expected_avatar_path: avatarB, p_expected_nickname: '小晴自动同步检查' }), 'reset partner avatar');
   await expect(pageB.locator('#faceMe img')).toHaveCount(0, { timeout: 30000 });
@@ -311,6 +342,20 @@ try {
 } finally {
   await browser?.close(); if (server) server.kill();
   let cleanupFailed = false;
+  // A failed response can still have created an account. Reconcile only this run's journaled emails.
+  if (resources.pendingEmails.length) {
+    try {
+      for (let page = 1; ; page++) {
+        const { users } = check(await admin.auth.admin.listUsers({ page, perPage: 1000 }), 'reconcile uncertain test account creation');
+        for (const user of users.filter(u => resources.pendingEmails.includes(u.email))) {
+          if (user.user_metadata?.purpose !== marker) throw new Error('Pending test account identity mismatch');
+          if (!resources.users.includes(user.id)) resources.users.push(user.id);
+        }
+        if (users.length < 1000) break;
+      }
+      resources.pendingEmails = []; await recordResources();
+    } catch (error) { cleanupFailed = true; console.error(`Test account reconciliation requires attention: ${error.message}`); }
+  }
   for (const space of resources.spaces) {
     try {
       const row = check(await admin.from('spaces').select('id,name').eq('id', space.id).maybeSingle(), 'verify test cleanup target');

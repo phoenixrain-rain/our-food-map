@@ -13,8 +13,8 @@
 <link rel="apple-touch-icon" sizes="180x180" href="./icons/app-icon-180.png" />
 <link rel="icon" type="image/png" sizes="192x192" href="./icons/app-icon-192.png" />
 <title>两个人的美食地图</title>
-<script src="./vendor/supabase.js?v=2.4.0"></script>
-<link rel="stylesheet" href="./styles.css?v=2.4.0" />
+<script src="./vendor/supabase.js?v=2.5.0"></script>
+<link rel="stylesheet" href="./styles.css?v=2.5.0" />
 </head>
 <body>
 
@@ -42,6 +42,8 @@
         <button class="quick" data-quick="random"><i><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 8h.01M16 8h.01M12 12h.01M8 16h.01M16 16h.01" stroke-width="3"/></svg></i><span>今晚吃啥</span></button>
         <button class="quick" data-quick="stats"><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V11M12 19V5M19 19v-7"/></svg></i><span>美食统计</span></button>
       </div>
+      <div class="draft-banner hidden" id="draftBanner"><div><small>未完成的本机草稿</small><strong id="draftName"></strong><p id="draftInfo"></p></div><div class="draft-actions"><button type="button" class="primary" id="resumeDraft">继续编辑</button><button type="button" class="text-btn" id="discardDraft">删除草稿</button></div></div>
+      <button type="button" class="task-home" data-open="tasks"><span aria-hidden="true">✓</span><span><strong>一起把食记补完整</strong><small id="taskHomeSummary">查看待评与待补充的记录</small></span><span aria-hidden="true">›</span></button>
       <button type="button" class="journal-home" data-open="journal"><span class="journal-home-icon" aria-hidden="true">▦</span><span><strong>我们的月度食记</strong><small id="journalHomeSummary">按月份收藏每一顿的回忆 ›</small></span><span aria-hidden="true">›</span></button>
       <div class="section">
         <div class="section-head"><div><h2>最近吃过</h2><p id="recordCountText">按上传时间从新到旧</p></div><button class="text-btn" data-go="records">查看更多</button></div>
@@ -89,12 +91,15 @@
         <div class="setting-row" data-open="couple"><div><strong>情侣空间</strong><small id="coupleSummary">创建或通过邀请码加入</small></div><span class="chev">›</span></div>
         <div class="setting-row" data-open="identity"><div><strong>头像与昵称</strong><small>换上自己的照片，让档案更像我们</small></div><span class="chev">›</span></div>
         <div class="setting-row" data-open="journal"><div><strong>月度食记</strong><small>打卡日历、这个月的照片与用餐回忆</small></div><span class="chev">›</span></div>
+        <div class="setting-row" data-open="tasks"><div><strong>待办中心</strong><small>分清我和 TA 的待评，补齐日期与人均</small></div><span class="chev">›</span></div>
+        <button type="button" class="setting-row draft-setting" id="profileDraft"><span><strong>本机草稿</strong><small id="profileDraftStatus">暂无草稿；编辑时可暂存文字和照片</small></span><span class="chev">›</span></button>
         <div class="setting-row" data-open="install"><div><strong>安装到手机</strong><small>添加到桌面，以独立 App 窗口打开</small></div><span class="mode-badge" id="installBadge">可安装</span></div>
         <div class="setting-row" data-open="backup"><div><strong>数据备份</strong><small>导出记录和照片，本机模式可合并导入</small></div><span class="chev">›</span></div>
         <div class="setting-row" data-open="trash"><div><strong>回收站</strong><small id="trashSummary">删除的记录可以在这里恢复</small></div><span class="chev">›</span></div>
+        <div class="setting-row" data-open="help"><div><strong>使用帮助</strong><small>一起评分、复访、草稿与手机安装</small></div><span class="chev">›</span></div>
       </div>
       <div class="profile-card">
-        <div class="section-head" style="margin:0 0 7px"><div><h2 style="font-size:16px">美食地图 2.4</h2><p>一家店，多次打卡，两个人的美食日记</p></div></div>
+        <div class="section-head" style="margin:0 0 7px"><div><h2 style="font-size:16px">美食地图 2.5</h2><p>一家店，多次打卡，两个人的美食日记</p></div></div>
         <div class="help-text">评分采用 10 分制，未评的项目不算作 0 分。综合分按味道 50%、性价比 30%、环境 20% 计算，三项齐全才显示。人均单独展示，服务与颜值作为补充。</div>
       </div>
     </section>
@@ -130,6 +135,7 @@
     <div class="toggle-row"><button type="button" class="toggle" id="favoriteToggle">♥ 我的最爱</button><button type="button" class="toggle" id="againToggle">↻ 我想二刷</button></div>
   </div>
   <p class="form-message hidden" id="saveMessage" role="alert"></p><button class="save-btn" type="submit" id="saveRecordBtn">保存到我们的档案</button>
+  <button type="button" class="secondary stash-draft" id="stashDraft">先暂存草稿，稍后继续</button><p class="help-text">草稿含文字和新照片，仅保存在此设备，有效期 7 天；不自动保存或同步。每个档案保留一份，云端账号退出时清理。草稿不纳入备份，清除站点数据会丢失。</p>
 </form></div></div>
 
 <div class="sheet-wrap" id="detailSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>这一顿</h3><p>同一家店，两个人可以保留不同答案。</p></div><button class="x" data-close="detailSheet">×</button></div><div id="detailBody"></div></div></div>
@@ -197,6 +203,15 @@
 
 <div class="sheet-wrap" id="placeCopySheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>复制餐厅信息</h3><p>把店名和地址，发给一起吃饭的人。</p></div><button type="button" class="x" data-close="placeCopySheet" aria-label="关闭复制信息">×</button></div><div class="form-section"><label for="placeCopyText" class="visually-hidden">待复制的餐厅信息</label><textarea id="placeCopyText" readonly rows="5"></textarea><p class="help-text" id="placeCopyMessage" role="status"></p><button type="button" class="save-btn" id="copyPlaceText">复制文字</button></div></div></div>
 
-<script type="module" src="./app.js?v=2.4.0"></script>
+<div class="sheet-wrap" id="tasksSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>待办中心</h3><p>不用一次写完，想起时再补一笔。</p></div><button type="button" class="x" data-close="tasksSheet" aria-label="关闭待办中心">×</button></div><div class="task-tabs" id="taskTabs" role="group" aria-label="待办类型"></div><p class="help-text" id="taskSummary"></p><div id="taskList"></div></div></div>
+<div class="sheet-wrap" id="helpSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>一起使用的小指南</h3><p>一顿饭，一条记录，两个人各自评价。</p></div><button type="button" class="x" data-close="helpSheet" aria-label="关闭使用帮助">×</button></div>
+  <div class="form-section help-guide"><h4>第一次和对方一起用</h4><p>各自用自己的邮箱收验证码登录。一个人创建情侣空间，把邀请码发给另一人加入。在“我们 → 情侣空间”看到两人的名字，就是同一个空间了。</p></div>
+  <div class="form-section help-guide"><h4>同一顿，怎么分别评分？</h4><p>由一个人记下这一顿；另一人打开这条记录，点“编辑记录 / 写我的评价”。不要为了评分再发一条。味道、性价比、环境各填完，双方都评完后才入榜。</p></div>
+  <div class="form-section help-guide"><h4>又去同一家店？</h4><p>打开原店的记录，点“再来一次”新增本次打卡。每次日期、人均、照片和评价独立保留，记录页按店收纳，榜单每家店只占一个位置。</p></div>
+  <div class="form-section help-guide"><h4>还没写完，先放一放</h4><p>编辑页底部点“先暂存草稿”，下次从首页继续。文字和新照片只存在此设备，有效期 7 天；正式保存后才同步。退出云端账号会清理该账号草稿，清除站点数据也会丢失。</p></div>
+  <div class="form-section help-guide"><h4>不知道吃什么，或想翻旧照片</h4><p>首页“今晚吃啥”按预算抽店；“月度食记”点日期回看当天；记录页“精细筛选”按城市、分类、人均找店。待办中心可以找到没评完或漏填的信息。</p></div>
+  <div class="form-section help-guide"><h4>手机安装、同步与备份</h4><p>在手机浏览器打开网站，再到“我们 → 安装到手机”，按页面提示添加桌面。它是网页 App，不需要下载来历不明的 APK。</p><p>顶部显示“双人空间 · 已同步”才是共同档案；“本机档案”只在当前设备。云端保存需联网，草稿不是离线上传队列。照片失败可先点刷新，原图缺失时需要补传。</p><p>误删去“我们 → 回收站”恢复。换手机或清理浏览器前先导出备份；备份含正式记录和可读取照片，不含未完成草稿。恢复导入只合并到本机档案，不自动上传云端。</p></div>
+</div></div>
+<script type="module" src="./app.js?v=2.5.0"></script>
 </body>
 </html>
