@@ -278,11 +278,16 @@ try {
   await pageA.locator('[data-nav="records"]').click(); await pageA.locator('#recordSort').selectOption('visit'); await expect(pageA.locator('#recordList .food-card')).toHaveCount(2); await expect(pageA.locator('#resultsCount')).toHaveText('2 家店 · 3 条记录');
   await expect(pageA.locator('#recordList .food-card').first()).toHaveAttribute('data-record', revisited.id); await expect.poll(() => pageA.locator(`#recordList [data-record="${revisited.id}"] .food-photo img`).evaluate(img => img.naturalWidth), { timeout: 15000 }).toBeGreaterThan(0);
   await pageA.locator(`#recordList [data-place="${id}"] summary`).click(); await expect(pageA.locator(`#recordList [data-place="${id}"] .visit-row`)).toHaveCount(2); await pageA.locator('#recordList .visit-row').last().scrollIntoViewIfNeeded(); await pageA.screenshot({ path: '.private-audit/mobile-visits.png' });
+  await pageA.locator(`#recordList [data-record="${revisited.id}"] .food-content`).click(); await pageA.locator('#detailBody .place-insights summary').click();
+  await expect(pageA.locator('#detailBody .place-insights')).toContainText('还需要两次');
   await pageB.locator('[data-close="trashSheet"]').click(); await pageB.locator('[data-nav="home"]').click(); await expect(pageB.locator(`#homeCards [data-record="${revisited.id}"]`)).toHaveCount(1, { timeout: 30000 });
   await pageB.locator(`#homeCards [data-record="${revisited.id}"] .food-content`).click(); await pageB.locator('#detailBody [data-edit]').click(); await expect(pageB.locator('#overallScore')).toHaveText('未评');
   for (const key of ['taste', 'value', 'vibe']) await pageB.locator(`[data-rate="${key}"]`).evaluate(el => { el.value = 6; el.dispatchEvent(new Event('input', { bubbles: true })); });
   await pageB.locator('#saveRecordBtn').click(); await expect(pageB.locator('#editSheet')).not.toHaveClass(/open/, { timeout: 30000 });
   await expect(pageA.locator('#rankList .food-card')).toHaveAttribute('data-record', revisited.id, { timeout: 30000 }); await expect(pageA.locator('#rankList .metric.value')).toContainText('5.0');
+  await expect(pageA.locator('#detailBody .place-insights')).toHaveAttribute('open', '');
+  await expect(pageA.locator('#detailBody [data-dimension="value"]')).toContainText('下降 3.5', { timeout: 30000 }); await expect(pageA.locator('#detailBody .insights-dishes')).toContainText('锅包肉');
+  await pageA.locator('[data-close="detailSheet"]').click(); console.log('PASS open revisit recap updates from partner review, uses latest joint dimensions, keeps private dish phrases and existing ranking rule');
   assert.deepEqual(check(await a.from('food_photos').select('id,path').eq('restaurant_id', id).order('id'), 'prior visit photos remain independent'), photosBeforeTrash);
   assert.equal(check(await a.from('reviews').select('taste').eq('restaurant_id', id).eq('user_id', resources.users[0]).single(), 'prior visit rating unchanged').taste, 9);
   // Moving a visit does not merge reviews or affect the other visits. A stale move is rejected.
@@ -343,7 +348,7 @@ try {
   await expect(pageA.locator('#draftBanner')).toBeHidden(); await expect(pageA.locator('#taskList')).toBeEmpty(); await expect(pageA.locator('#taskTabs')).toBeEmpty(); await expect(pageA.locator('#taskSummary')).toBeEmpty();
   for (const selector of ['#detailBody', '#memberList', '#currentInviteCode', '#avatarPreview', '#photoPreviews', '#recordPlace']) await expect(pageA.locator(selector)).toBeEmpty();
   await expect(pageA.locator('#restaurantName')).toHaveValue(''); await expect(pageA.locator('#reviewText')).toHaveValue(''); await expect(pageA.locator('#nicknameInput')).toHaveValue('');
-  assert.equal(await pageA.evaluate(async scope => (await import('/lib/drafts.js?v=2.6.0')).loadDraft(scope), `cloud:${resources.users[0]}:${space.id}`), null, 'logout removes that account draft from IndexedDB');
+  assert.equal(await pageA.evaluate(async scope => (await import('/lib/drafts.js?v=2.7.0')).loadDraft(scope), `cloud:${resources.users[0]}:${space.id}`), null, 'logout removes that account draft from IndexedDB');
   await expect(pageA.locator('#faceMe img')).toHaveCount(0); await expect(pageA.locator('#facePartner img')).toHaveCount(0);
   check(await b.rpc('save_member_profile', { p_nickname: '小晴自动同步检查', p_avatar_path: null, p_expected_avatar_path: avatarB, p_expected_nickname: '小晴自动同步检查' }), 'reset partner avatar');
   await expect(pageB.locator('#faceMe img')).toHaveCount(0, { timeout: 30000 });
