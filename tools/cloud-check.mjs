@@ -343,7 +343,7 @@ try {
   await expect(pageA.locator('#draftBanner')).toBeHidden(); await expect(pageA.locator('#taskList')).toBeEmpty(); await expect(pageA.locator('#taskTabs')).toBeEmpty(); await expect(pageA.locator('#taskSummary')).toBeEmpty();
   for (const selector of ['#detailBody', '#memberList', '#currentInviteCode', '#avatarPreview', '#photoPreviews', '#recordPlace']) await expect(pageA.locator(selector)).toBeEmpty();
   await expect(pageA.locator('#restaurantName')).toHaveValue(''); await expect(pageA.locator('#reviewText')).toHaveValue(''); await expect(pageA.locator('#nicknameInput')).toHaveValue('');
-  assert.equal(await pageA.evaluate(async scope => (await import('/lib/drafts.js?v=2.5.1')).loadDraft(scope), `cloud:${resources.users[0]}:${space.id}`), null, 'logout removes that account draft from IndexedDB');
+  assert.equal(await pageA.evaluate(async scope => (await import('/lib/drafts.js?v=2.5.2')).loadDraft(scope), `cloud:${resources.users[0]}:${space.id}`), null, 'logout removes that account draft from IndexedDB');
   await expect(pageA.locator('#faceMe img')).toHaveCount(0); await expect(pageA.locator('#facePartner img')).toHaveCount(0);
   check(await b.rpc('save_member_profile', { p_nickname: '小晴自动同步检查', p_avatar_path: null, p_expected_avatar_path: avatarB, p_expected_nickname: '小晴自动同步检查' }), 'reset partner avatar');
   await expect(pageB.locator('#faceMe img')).toHaveCount(0, { timeout: 30000 });

@@ -1,16 +1,17 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.5.1';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.5.1';
-import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.5.1';
-import { CloudRepository } from './lib/cloud.js?v=2.5.1';
-import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.5.1';
-import { renderHTML } from './lib/dom.js?v=2.5.1';
-import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.5.1';
-import { filterRecords } from './lib/discovery.js?v=2.5.1';
-import { DiscoveryUI } from './lib/discovery-ui.js?v=2.5.1';
-import { DraftUI } from './lib/draft-ui.js?v=2.5.1';
-import { clearAccountDrafts } from './lib/drafts.js?v=2.5.1';
-import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.5.1';
-import { PhotoGallery } from './lib/gallery.js?v=2.5.1';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.5.2';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.5.2';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.5.2';
+import { CloudRepository } from './lib/cloud.js?v=2.5.2';
+import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.5.2';
+import { renderHTML } from './lib/dom.js?v=2.5.2';
+import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.5.2';
+import { filterRecords } from './lib/discovery.js?v=2.5.2';
+import { DiscoveryUI } from './lib/discovery-ui.js?v=2.5.2';
+import { DraftUI } from './lib/draft-ui.js?v=2.5.2';
+import { clearAccountDrafts } from './lib/drafts.js?v=2.5.2';
+import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.5.2';
+import { PhotoGallery } from './lib/gallery.js?v=2.5.2';
+import { DialogController } from './lib/dialogs.js?v=2.5.2';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -22,7 +23,7 @@ let state = emptyData(), user = null, client = null, repository = null;
 let mode = 'loading', syncStatus = 'loading', activePage = 'home', activeFilter = 'all', rankKey = 'value', recordView = 'places';
 let authEpoch = 0, syncChain = Promise.resolve(), syncTimer, realtimeChannel, subscribedSpace, deferredInstallPrompt;
 let editor = null, saving = false, photosBusy = false, detailId = null, cooldownUntil = 0;
-let toastTimer, sessionKnown = false, lastFocused;
+let toastTimer, sessionKnown = false;
 let identity = null, avatarBusy = false, profileSaving = false;
 let activeTask = 'mine';
 const selfId = () => user?.id || 'local-me';
@@ -47,8 +48,7 @@ function friendly(error) {
 }
 function showFormMessage(message = '') { $('#saveMessage').textContent = message; $('#saveMessage').classList.toggle('hidden', !message); }
 function openSheet(id) {
-  lastFocused = document.activeElement;
-  $('#' + id).classList.add('open');
+  dialogs.open(id);
   if (id === 'identitySheet') openIdentity();
   if (id === 'coupleSheet' && user) scheduleSync();
   if (id === 'installSheet') updateInstallUI();
@@ -56,6 +56,7 @@ function openSheet(id) {
   if (id === 'tasksSheet') renderTasks();
 }
 function closeSheet(id, force = false) {
+  if (!$('#' + id).classList.contains('open')) return;
   if (id === 'identitySheet' && !force) {
     if (avatarBusy || profileSaving) return toast('正在处理头像，请稍候');
     if (identity?.dirty && !window.confirm('放弃尚未保存的头像和昵称修改？')) return;
@@ -66,9 +67,8 @@ function closeSheet(id, force = false) {
     if (editor?.dirty && !window.confirm('放弃这次尚未保存的修改？')) return;
     discardEditor();
   }
-  $('#' + id).classList.remove('open');
+  dialogs.close(id);
   if (id === 'detailSheet') detailId = null;
-  lastFocused?.focus?.({ preventScroll: true });
 }
 function discardEditor() {
   if (editor) {
@@ -193,7 +193,7 @@ function renderProfile() {
   }
   $('#authStatus').textContent = user ? `当前账号：${user.email}。${state.space ? '已连接情侣空间。' : '登录成功，请创建或加入情侣空间。'}` : '用自己的邮箱登录，收到验证码后回到当前页面输入。';
   $('#loginForm').classList.toggle('hidden', !!user); $('#logoutBtn').classList.toggle('hidden', !user);
-  $('#importInput').disabled = !!user; $('#importLabel').classList.toggle('disabled', !!user);
+  $('#importInput').disabled = !!user; $('#importLabel').disabled = !!user; $('#importLabel').classList.toggle('disabled', !!user);
   $('#backupHelp').textContent = user ? '当前为云端模式，可导出完整备份。为避免混入其他空间，导入只在退出登录后的本机模式开放。' : '导入会合并到本机档案，不会替换已存在的同编号记录，也不会自动上传到云端。';
   updateInstallUI();
 }
@@ -318,7 +318,7 @@ async function addPhotos(files) {
   if (!editor || photosBusy || saving) return;
   const draft = editor, capacity = Math.max(0, MAX_PHOTOS - existingEditorPhotos().filter(p => p.user_id === selfId()).length - editor.added.length);
   if (!capacity) return toast(`每人每次打卡最多 ${MAX_PHOTOS} 张照片，先移除几张再添加`);
-  photosBusy = true; $('#saveRecordBtn').disabled = true; $('#photoInput').disabled = true; $('#stashDraft').disabled = true;
+  photosBusy = true; $('#saveRecordBtn').disabled = true; $('#photoInput').disabled = true; $('#choosePhotos').disabled = true; $('#stashDraft').disabled = true;
   const selected = [...files].slice(0, capacity), errors = [];
   for (let i = 0; i < selected.length; i++) {
     $('#photoStatus').textContent = `正在处理照片 ${i + 1}/${selected.length}…`;
@@ -330,7 +330,7 @@ async function addPhotos(files) {
       draft.added.push({ file, fingerprint, preview: URL.createObjectURL(file), path: null, uploaded: false }); draft.dirty = true; renderEditorPhotos();
     } catch (error) { errors.push(`${selected[i].name}：${friendly(error)}`); }
   }
-  photosBusy = false; $('#saveRecordBtn').disabled = false; $('#photoInput').disabled = false; $('#stashDraft').disabled = false; $('#photoInput').value = '';
+  photosBusy = false; $('#saveRecordBtn').disabled = false; $('#photoInput').disabled = false; $('#choosePhotos').disabled = false; $('#stashDraft').disabled = false; $('#photoInput').value = '';
   $('#photoStatus').textContent = errors.length ? errors.join('；') : `${draft.added.length} 张新照片已就绪，点击底部保存。${files.length > capacity ? `最多还能添加 ${capacity} 张，本次其余照片未添加。` : ''}`;
 }
 function collectDraft() {
@@ -667,8 +667,9 @@ function renderTasks() {
 }
 const discovery = new DiscoveryUI({ getState: () => state, selfId, renderHTML, esc, cardHTML, photoHTML, openSheet, closeSheet, renderRecords, switchPage, toast, getEpoch: () => authEpoch });
 const photoGallery = new PhotoGallery({ getState: () => state, getEpoch: () => authEpoch, getRepository: () => repository,
-  isCloud: () => mode === 'cloud', ownerName, toast, onError: error => toast(friendly(error)),
+  isCloud: () => mode === 'cloud', ownerName, toast, onError: error => toast(friendly(error)), onVisibilityChange: () => dialogs.sync(),
   updatePhoto: photo => { state.photos = state.photos.map(p => p.id === photo.id ? photo : p); render(); } });
+const dialogs = new DialogController({ getOverlay: () => photoGallery.visible ? photoGallery.root : null });
 const drafts = new DraftUI({ getScope: () => mode === 'local' ? 'local:local-me:' : mode === 'cloud' && state.space && user ? `cloud:${user.id}:${state.space.id}` : null,
   getEpoch: () => authEpoch, getEditor: () => !saving && !photosBusy ? editor : null, capture: captureEditorDraft, restore: restoreEditorDraft,
   lock: value => $$('#recordForm input, #recordForm button, #recordForm textarea, #recordForm select').forEach(el => el.disabled = value),
@@ -714,7 +715,7 @@ document.addEventListener('error', event => {
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape') {
     if (photoGallery.visible) photoGallery.close();
-    else { const open = $$('.sheet-wrap.open').at(-1); if (open) closeSheet(open.id); }
+    else { const open = dialogs.top(); if (open) closeSheet(open.id); }
   }
   if (['Enter', ' '].includes(event.key) && event.target.matches('[data-open]:not(button)')) { event.preventDefault(); event.target.click(); }
 });
@@ -731,6 +732,7 @@ $('#recordForm').addEventListener('input', event => {
   if (event.target.dataset.rate) { const input = event.target; if (Number(input.value) > 0 && Number(input.value) < 1) input.value = 1; $(`[data-rate-value="${input.dataset.rate}"]`).textContent = formatScore(rating(input.value)); updateOverall(); }
 });
 $('#photoInput').onchange = event => addPhotos(event.target.files);
+$('#choosePhotos').onclick = () => $('#photoInput').click();
 $('#chooseAvatar').onclick = () => $('#avatarInput').click();
 $('#avatarInput').onchange = event => chooseAvatar(event.target.files[0]);
 $('#removeAvatar').onclick = removeAvatar;
@@ -742,6 +744,7 @@ $('#createSpaceBtn').onclick = () => spaceAction(false); $('#joinSpaceBtn').oncl
 $('#refreshMembers').onclick = () => buttonAction($('#refreshMembers'), async () => { await refreshCloud(); toast('成员状态已更新'); });
 $('#logoutBtn').onclick = () => buttonAction($('#logoutBtn'), async () => { if (saving || profileSaving || drafts.busy) throw new Error('请等待保存完成后再退出'); await clearAccountDrafts(user?.id); const { error } = await client.auth.signOut({ scope: 'local' }); if (error) throw error; await changeSession(null); closeSheet('cloudSheet'); toast('已退出此设备，切换到本机档案'); });
 $('#exportBtn').onclick = exportBackup; $('#importInput').onchange = event => importBackup(event.target.files[0]);
+$('#importLabel').onclick = () => $('#importInput').click();
 $('#installAppBtn').onclick = installApp;
 window.addEventListener('beforeunload', event => { if (saving || photosBusy || editor?.dirty || profileSaving || avatarBusy || identity?.dirty || drafts.busy) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('online', () => { renderHeader(); if (user) scheduleSync(); }); window.addEventListener('offline', renderHeader);

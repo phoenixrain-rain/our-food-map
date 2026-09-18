@@ -13,8 +13,8 @@
 <link rel="apple-touch-icon" sizes="180x180" href="./icons/app-icon-180.png" />
 <link rel="icon" type="image/png" sizes="192x192" href="./icons/app-icon-192.png" />
 <title>两个人的美食地图</title>
-<script src="./vendor/supabase.js?v=2.5.1"></script>
-<link rel="stylesheet" href="./styles.css?v=2.5.1" />
+<script src="./vendor/supabase.js?v=2.5.2"></script>
+<link rel="stylesheet" href="./styles.css?v=2.5.2" />
 </head>
 <body>
 
@@ -122,16 +122,16 @@
     <div class="field"><label for="restaurantName">餐厅 / 店名 *</label><input class="input" id="restaurantName" required maxlength="120" placeholder="例如：老四季抻面" /></div>
     <div class="field-row"><div class="field"><label for="city">城市</label><input class="input" id="city" placeholder="沈阳" /></div><div class="field"><label for="category">分类（可自定义）</label><input class="input" id="category" list="categoryOptions" maxlength="40" placeholder="选择或自己填写" autocomplete="off" /><datalist id="categoryOptions"></datalist></div></div>
     <p class="help-text">例如火锅、川湘菜、面馆；也可以直接填写自己的分类。</p>
-    <div class="field"><label>地址 / 分店</label><input class="input" id="address" placeholder="可选，用来区分同品牌不同门店" /></div>
+    <div class="field"><label for="address">地址 / 分店</label><input class="input" id="address" placeholder="可选，用来区分同品牌不同门店" /></div>
     <div class="field-row"><div class="field"><label for="visitDate" id="visitDateLabel">用餐日期（可选）</label><input class="input" type="date" id="visitDate" /></div><div class="field"><label for="price" id="priceLabel">实付人均 ¥</label><input class="input" type="number" inputmode="decimal" min="0" max="99999999.99" step="0.01" id="price" placeholder="未填写" /></div></div>
-    <div class="field"><label>标签</label><input class="input" id="tags" placeholder="约会、夜宵、排队值得、生日…" /></div>
+    <div class="field"><label for="tags">标签</label><input class="input" id="tags" placeholder="约会、夜宵、排队值得、生日…" /></div>
   </div>
-  <div class="form-section"><h4>📷 照片 <span class="subtle" id="photoCount"></span></h4><label class="photo-picker"><input type="file" id="photoInput" accept="image/*" multiple /><strong>＋ 添加这一顿的照片</strong><small>每人每次打卡最多 8 张，自动压缩；保存后才上传</small></label><p class="help-text" id="photoStatus" role="status"></p><div class="photo-previews" id="photoPreviews"></div></div>
+  <div class="form-section"><h4>📷 照片 <span class="subtle" id="photoCount"></span></h4><button type="button" class="photo-picker" id="choosePhotos"><strong>＋ 添加这一顿的照片</strong><small>每人每次打卡最多 8 张，自动压缩；保存后才上传</small></button><input class="hidden" type="file" id="photoInput" accept="image/*" multiple aria-label="选择餐厅照片" /><p class="help-text" id="photoStatus" role="status"></p><div class="photo-previews" id="photoPreviews"></div></div>
   <div class="form-section" id="statusSection"><h4>🗂 状态</h4><div class="toggle-row"><button type="button" class="toggle on" data-status="eaten">✓ 已吃过</button><button type="button" class="toggle" data-status="wishlist">🔖 想吃</button></div></div>
   <div class="form-section" id="ratingSection"><h4>⭐ 我的评价</h4>
     <p class="help-text">10 分制，拖动滑块评分。未操作的项目保持未评，可稍后补上。</p><div id="rateRows"></div><details class="extra-ratings"><summary>补充：服务与颜值（可选）</summary><div id="extraRateRows"></div></details><div class="overall"><span>我的综合分 <small>味道 50% · 性价比 30% · 环境 20%</small></span><strong id="overallScore">—</strong></div>
-    <div class="field" style="margin-top:12px"><label>最喜欢的一道</label><input class="input" id="favoriteDish" placeholder="例如：鸡架 / 提拉米苏" /></div>
-    <div class="field"><label>我的一句话评价</label><textarea id="reviewText" placeholder="这一顿最值得记住的是什么？"></textarea></div>
+    <div class="field" style="margin-top:12px"><label for="favoriteDish">最喜欢的一道</label><input class="input" id="favoriteDish" placeholder="例如：鸡架 / 提拉米苏" /></div>
+    <div class="field"><label for="reviewText">我的一句话评价</label><textarea id="reviewText" placeholder="这一顿最值得记住的是什么？"></textarea></div>
     <div class="toggle-row"><button type="button" class="toggle" id="favoriteToggle">♥ 我的最爱</button><button type="button" class="toggle" id="againToggle">↻ 我想二刷</button></div>
   </div>
   <p class="form-message hidden" id="saveMessage" role="alert"></p><button class="save-btn" type="submit" id="saveRecordBtn">保存到我们的档案</button>
@@ -167,7 +167,7 @@
   </div>
 </div></div>
 
-<div class="sheet-wrap" id="backupSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>数据备份</h3><p>导出包含记录、评价和可读取的照片。导入会合并到本机档案。</p></div><button class="x" data-close="backupSheet">×</button></div><div class="form-section"><button class="secondary" id="exportBtn">导出完整备份</button><label class="secondary" style="display:block;text-align:center;margin-top:9px" id="importLabel">合并导入本机备份<input type="file" id="importInput" accept="application/json" style="display:none"></label><p class="help-text" id="backupHelp"></p></div></div></div>
+<div class="sheet-wrap" id="backupSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>数据备份</h3><p>导出包含记录、评价和可读取的照片。导入会合并到本机档案。</p></div><button class="x" data-close="backupSheet">×</button></div><div class="form-section"><button class="secondary" id="exportBtn">导出完整备份</button><button type="button" class="secondary" style="display:block;text-align:center;margin-top:9px" id="importLabel">合并导入本机备份</button><input type="file" id="importInput" accept="application/json" class="hidden" aria-label="选择本机备份文件"><p class="help-text" id="backupHelp"></p></div></div></div>
 
 <div class="sheet-wrap" id="installSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>安装到手机</h3><p>安装后从桌面图标启动，不再显示浏览器地址栏。</p></div><button class="x" data-close="installSheet">×</button></div>
   <div class="auth-intro"><div class="icon">📱</div><h3>把美食地图变成手机 App</h3><p id="installStatus">正在检查当前浏览器的安装方式…</p></div>
@@ -212,6 +212,6 @@
   <div class="form-section help-guide"><h4>不知道吃什么，或想翻旧照片</h4><p>首页“今晚吃啥”按预算抽店；“月度食记”点日期回看当天；记录页“精细筛选”按城市、分类、人均找店。待办中心可以找到没评完或漏填的信息。</p></div>
   <div class="form-section help-guide"><h4>手机安装、同步与备份</h4><p>在手机浏览器打开网站，再到“我们 → 安装到手机”，按页面提示添加桌面。它是网页 App，不需要下载来历不明的 APK。</p><p>顶部显示“双人空间 · 已同步”才是共同档案；“本机档案”只在当前设备。云端保存需联网，草稿不是离线上传队列。照片失败可先点刷新，原图缺失时需要补传。</p><p>误删去“我们 → 回收站”恢复。换手机或清理浏览器前先导出备份；备份含正式记录和可读取照片，不含未完成草稿。恢复导入只合并到本机档案，不自动上传云端。</p></div>
 </div></div>
-<script type="module" src="./app.js?v=2.5.1"></script>
+<script type="module" src="./app.js?v=2.5.2"></script>
 </body>
 </html>

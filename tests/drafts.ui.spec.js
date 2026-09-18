@@ -44,7 +44,7 @@ test('restoring a stale draft never overwrites the other tabs saved record', asy
 test('draft storage serializes concurrent edits, enforces revision deletion, expiry and account-scoped cleanup', async ({ page }) => {
   await ready(page);
   const result = await page.evaluate(async () => {
-    const api = await import('/lib/drafts.js?v=2.5.1');
+    const api = await import('/lib/drafts.js?v=2.5.2');
     const payload = { id: 'temporary', status: 'eaten', fields: { restaurantName: '测试草稿' }, removed: [], added: [] };
     const race = await Promise.allSettled([api.saveDraft('cloud:a:s', payload), api.saveDraft('cloud:a:s', payload)]);
     const saved = await api.loadDraft('cloud:a:s'); let blocked = false;
