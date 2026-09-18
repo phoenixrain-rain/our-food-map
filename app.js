@@ -1,17 +1,18 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.5.2';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.5.2';
-import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.5.2';
-import { CloudRepository } from './lib/cloud.js?v=2.5.2';
-import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.5.2';
-import { renderHTML } from './lib/dom.js?v=2.5.2';
-import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.5.2';
-import { filterRecords } from './lib/discovery.js?v=2.5.2';
-import { DiscoveryUI } from './lib/discovery-ui.js?v=2.5.2';
-import { DraftUI } from './lib/draft-ui.js?v=2.5.2';
-import { clearAccountDrafts } from './lib/drafts.js?v=2.5.2';
-import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.5.2';
-import { PhotoGallery } from './lib/gallery.js?v=2.5.2';
-import { DialogController } from './lib/dialogs.js?v=2.5.2';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.6.0';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.6.0';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.6.0';
+import { CloudRepository } from './lib/cloud.js?v=2.6.0';
+import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.6.0';
+import { renderHTML } from './lib/dom.js?v=2.6.0';
+import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.6.0';
+import { filterRecords } from './lib/discovery.js?v=2.6.0';
+import { DiscoveryUI } from './lib/discovery-ui.js?v=2.6.0';
+import { DraftUI } from './lib/draft-ui.js?v=2.6.0';
+import { clearAccountDrafts } from './lib/drafts.js?v=2.6.0';
+import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.6.0';
+import { PhotoGallery } from './lib/gallery.js?v=2.6.0';
+import { DialogController } from './lib/dialogs.js?v=2.6.0';
+import { UpdateUI } from './lib/updates.js?v=2.6.0';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -54,6 +55,7 @@ function openSheet(id) {
   if (id === 'installSheet') updateInstallUI();
   if (id === 'journalSheet') discovery.renderJournal();
   if (id === 'tasksSheet') renderTasks();
+  if (id === 'updatesSheet') updates.render();
 }
 function closeSheet(id, force = false) {
   if (!$('#' + id).classList.contains('open')) return;
@@ -112,6 +114,7 @@ function cardHTML(r, rank = null, grouped = false) {
   return `<article class="food-card" data-record="${esc(r.id)}" data-place="${esc(r.place_id || r.id)}"><div class="food-card-top"><div class="food-photo">${photoHTML(firstPhoto(r.id), r.name)}${rank !== null ? `<span class="rank-marker">${rank + 1}</span>` : ''}</div><button type="button" class="food-content" data-detail="${esc(r.id)}"><div class="food-line"><h3 class="food-title">${esc(r.name)}</h3><span class="record-state">${r.status === 'wishlist' ? '想吃' : '吃过'}</span></div><div class="food-meta">${esc([r.city, r.category].filter(Boolean).join(' · ') || '未填写位置')}</div>${favoriteDish ? `<div class="dish-line">推荐 ${esc(favoriteDish)}</div>` : `<div class="dish-line subtle">${esc(r.address || '点开记录这一顿')}</div>`}<div class="tagline">${(r.tags || []).slice(0, 2).map(t => `<span class="tag">${esc(t)}</span>`).join('')}${s.bothFavorite ? '<span class="tag loved">♥ 共同最爱</span>' : ''}${s.wouldReturn ? '<span class="tag return">想二刷</span>' : ''}</div></button></div><div class="visit-context">${tierHTML(r)}<span>${esc(visitLabel(state, r))}</span><span>${rank !== null ? '入榜打卡 ' : ''}${esc(r.visit_date || '未填用餐日期')}</span></div><button type="button" class="card-metrics-button" data-detail="${esc(r.id)}">${metricHTML(s, r.price_per_person, r.status === 'wishlist')}</button><div class="card-footer"><span>${reviewText}</span><button type="button" class="text-btn" data-detail="${esc(r.id)}">查看这一顿 ›</button></div>${grouped ? `<div class="place-actions"><span>${rank !== null ? '显示最近一次双方评完的打卡' : '显示最近一次符合筛选的记录'}</span><button type="button" class="text-btn" data-repeat="${esc(r.id)}">＋ 再来一次</button></div>${visitHistoryHTML(visits, r.id)}` : ''}</article>`;
 }
 function render() {
+  updates.render();
   discovery.render();
   drafts.render(); renderTasks();
   renderHeader(); renderHome(); renderRecords(); renderRank(); renderProfile(); renderTrash(); renderCategories();
@@ -674,6 +677,7 @@ const drafts = new DraftUI({ getScope: () => mode === 'local' ? 'local:local-me:
   getEpoch: () => authEpoch, getEditor: () => !saving && !photosBusy ? editor : null, capture: captureEditorDraft, restore: restoreEditorDraft,
   lock: value => $$('#recordForm input, #recordForm button, #recordForm textarea, #recordForm select').forEach(el => el.disabled = value),
   afterStash: () => { discardEditor(); closeSheet('editSheet', true); closeSheet('detailSheet', true); switchPage('home'); }, toast, message: showFormMessage });
+const updates = new UpdateUI({ hasUnsaved: () => saving || photosBusy || editor?.dirty || profileSaving || avatarBusy || identity?.dirty || drafts.busy, toast });
 document.addEventListener('click', event => {
   const target = event.target.closest('button, [data-open], [data-close], [data-filter-go], [data-go]'); if (!target || target.disabled) return;
   if (target.dataset.photo) return photoGallery.open(target.dataset.photo);
@@ -754,6 +758,6 @@ setInterval(() => { if (!document.hidden && user && navigator.onLine) scheduleSy
 setInterval(updateCooldown, 1000);
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); deferredInstallPrompt = event; updateInstallUI(); });
 window.addEventListener('appinstalled', () => { deferredInstallPrompt = null; updateInstallUI(); toast('已添加到手机桌面'); });
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./service-worker.js').then(reg => reg.update()).catch(() => {});
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./service-worker.js', { updateViaCache: 'none' }).then(reg => updates.connect(reg)).then(() => updates.check()).catch(() => {});
 const pending = sessionStorage.getItem(LOGIN_EMAIL_KEY); if (pending) { $('#loginEmail').value = pending; $('#otpLoginBox').classList.remove('hidden'); }
 render(); initCloud();

@@ -1,28 +1,34 @@
-const CACHE_NAME = 'our-food-map-shell-v10';
+const CACHE_NAME = 'our-food-map-shell-v11';
+const APP_VERSION = '2.6.0';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './app.js?v=2.5.2',
-  './styles.css?v=2.5.2',
-  './vendor/supabase.js?v=2.5.2',
-  './lib/model.js?v=2.5.2',
-  './lib/photos.js?v=2.5.2',
-  './lib/cloud.js?v=2.5.2',
-  './lib/local-store.js?v=2.5.2',
-  './lib/avatar.js?v=2.5.2',
-  './lib/dom.js?v=2.5.2',
-  './lib/discovery.js?v=2.5.2',
-  './lib/discovery-ui.js?v=2.5.2',
-  './lib/drafts.js?v=2.5.2',
-  './lib/draft-ui.js?v=2.5.2',
-  './lib/tasks.js?v=2.5.2',
-  './lib/gallery.js?v=2.5.2',
-  './lib/dialogs.js?v=2.5.2',
+  './app.js?v=2.6.0',
+  './styles.css?v=2.6.0',
+  './vendor/supabase.js?v=2.6.0',
+  './lib/model.js?v=2.6.0',
+  './lib/photos.js?v=2.6.0',
+  './lib/cloud.js?v=2.6.0',
+  './lib/local-store.js?v=2.6.0',
+  './lib/avatar.js?v=2.6.0',
+  './lib/dom.js?v=2.6.0',
+  './lib/discovery.js?v=2.6.0',
+  './lib/discovery-ui.js?v=2.6.0',
+  './lib/drafts.js?v=2.6.0',
+  './lib/draft-ui.js?v=2.6.0',
+  './lib/tasks.js?v=2.6.0',
+  './lib/gallery.js?v=2.6.0',
+  './lib/dialogs.js?v=2.6.0',
+  './lib/updates.js?v=2.6.0',
   './icons/app-icon-180.png',
   './icons/app-icon-192.png',
   './icons/app-icon-512.png'
 ];
+
+self.addEventListener('message', event => {
+  if (event.data?.type === 'FOOD_MAP_GET_VERSION') event.ports?.[0]?.postMessage({ type: 'FOOD_MAP_VERSION', version: APP_VERSION });
+});
 
 self.addEventListener('install', event => {
   event.waitUntil(

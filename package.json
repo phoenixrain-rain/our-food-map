@@ -1,11 +1,11 @@
 {
   "name": "our-food-map",
-  "version": "2.5.2",
+  "version": "2.6.0",
   "private": true,
   "type": "module",
   "scripts": {
     "vendor": "esbuild tools/vendor-entry.js --bundle --minify --format=iife --platform=browser --outfile=vendor/supabase.js && node tools/vendor-notices.mjs",
-    "test": "node --test tests/model.test.js tests/discovery.test.js tests/tasks-drafts.test.js",
+    "test": "node --test tests/model.test.js tests/discovery.test.js tests/tasks-drafts.test.js tests/updates.test.js",
     "test:ui": "playwright test",
     "test:cloud": "node tools/cloud-check.mjs",
     "check:release": "node tools/check-release.mjs",

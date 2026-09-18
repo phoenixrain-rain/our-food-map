@@ -13,8 +13,8 @@
 <link rel="apple-touch-icon" sizes="180x180" href="./icons/app-icon-180.png" />
 <link rel="icon" type="image/png" sizes="192x192" href="./icons/app-icon-192.png" />
 <title>两个人的美食地图</title>
-<script src="./vendor/supabase.js?v=2.5.2"></script>
-<link rel="stylesheet" href="./styles.css?v=2.5.2" />
+<script src="./vendor/supabase.js?v=2.6.0"></script>
+<link rel="stylesheet" href="./styles.css?v=2.6.0" />
 </head>
 <body>
 
@@ -28,6 +28,7 @@
 
   <main>
     <div class="connection-banner hidden" id="connectionBanner" role="status"></div>
+    <div class="update-banner hidden" id="updateBanner" role="status"><span id="updateBannerText"></span><button type="button" id="applyUpdateBanner">更新并重新打开</button></div>
     <section class="page active" data-page="home">
       <div class="hero">
         <div class="hero-kicker"><span>♥</span><span id="spaceName">我们的美食地图</span></div>
@@ -97,9 +98,10 @@
         <div class="setting-row" data-open="backup"><div><strong>数据备份</strong><small>导出记录和照片，本机模式可合并导入</small></div><span class="chev">›</span></div>
         <div class="setting-row" data-open="trash"><div><strong>回收站</strong><small id="trashSummary">删除的记录可以在这里恢复</small></div><span class="chev">›</span></div>
         <div class="setting-row" data-open="help"><div><strong>使用帮助</strong><small>一起评分、复访、草稿与手机安装</small></div><span class="chev">›</span></div>
+        <div class="setting-row" data-open="updates"><div><strong>版本与更新</strong><small id="profileVersion">查看当前版本与更新状态</small></div><span class="chev">›</span></div>
       </div>
       <div class="profile-card">
-        <div class="section-head" style="margin:0 0 7px"><div><h2 style="font-size:16px">美食地图 2.5</h2><p>一家店，多次打卡，两个人的美食日记</p></div></div>
+        <div class="section-head" style="margin:0 0 7px"><div><h2 style="font-size:16px">美食地图 <span id="aboutVersion"></span></h2><p>一家店，多次打卡，两个人的美食日记</p></div></div>
         <div class="help-text">评分采用 10 分制，未评的项目不算作 0 分。综合分按味道 50%、性价比 30%、环境 20% 计算，三项齐全才显示。人均单独展示，服务与颜值作为补充。</div>
       </div>
     </section>
@@ -212,6 +214,12 @@
   <div class="form-section help-guide"><h4>不知道吃什么，或想翻旧照片</h4><p>首页“今晚吃啥”按预算抽店；“月度食记”点日期回看当天；记录页“精细筛选”按城市、分类、人均找店。待办中心可以找到没评完或漏填的信息。</p></div>
   <div class="form-section help-guide"><h4>手机安装、同步与备份</h4><p>在手机浏览器打开网站，再到“我们 → 安装到手机”，按页面提示添加桌面。它是网页 App，不需要下载来历不明的 APK。</p><p>顶部显示“双人空间 · 已同步”才是共同档案；“本机档案”只在当前设备。云端保存需联网，草稿不是离线上传队列。照片失败可先点刷新，原图缺失时需要补传。</p><p>误删去“我们 → 回收站”恢复。换手机或清理浏览器前先导出备份；备份含正式记录和可读取照片，不含未完成草稿。恢复导入只合并到本机档案，不自动上传云端。</p></div>
 </div></div>
-<script type="module" src="./app.js?v=2.5.2"></script>
+<div class="sheet-wrap" id="updatesSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>版本与更新</h3><p>让新功能准备好，再由你决定重新打开。</p></div><button type="button" class="x" data-close="updatesSheet" aria-label="关闭版本与更新">×</button></div>
+  <div class="form-section update-versions"><p><span>当前页面</span><strong id="runningVersion"></strong></p><p><span>已安装离线版本</span><strong id="cachedVersion">尚未确认</strong></p></div>
+  <div class="form-section help-guide"><h4>最近为你们完善了这些</h4><p>文字和照片可以先存本机草稿；待办中心帮你找到没评完的那一顿；打开的大图能跟随照片变更；弹窗关闭和键盘操作更加顺手。</p><p>从这个版本开始，可在这里检查更新。新版准备好后会提示，是否重新打开由你决定。</p></div>
+  <div class="form-section"><p class="help-text" id="updateStatus" role="status"></p><p class="help-text" id="updateSafety"></p><button type="button" class="secondary" id="checkUpdate">检查更新</button><button type="button" class="save-btn" id="applyUpdate" style="margin-top:12px" disabled>更新并重新打开</button></div>
+  <p class="help-text">不需要手动改网址，也不要清除网站数据。若浏览器限制了离线缓存，可联网关闭旧标签或 App 窗口，再重新打开网站。更新不能替代备份；未点保存或暂存的内容不会自动存下来。</p>
+</div></div>
+<script type="module" src="./app.js?v=2.6.0"></script>
 </body>
 </html>

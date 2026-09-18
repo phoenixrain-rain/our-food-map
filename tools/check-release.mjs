@@ -9,6 +9,8 @@ const lock = JSON.parse(read('package-lock.json'));
 assert.equal(lock.version, version, 'Lockfile version must match package');
 assert.equal(lock.packages[''].version, version, 'Root lockfile package must match');
 const worker = read('service-worker.js');
+assert.equal(worker.match(/const APP_VERSION = '([^']+)'/)[1], version, 'Worker version message must match the release');
+assert.equal(read('lib/updates.js').match(/const APP_VERSION = '([^']+)'/)[1], version, 'Version UI must match the release');
 const shell = new Set([...worker.match(/const APP_SHELL = (\[[\s\S]*?\]);/)[1].matchAll(/'([^']+)'/g)].map(m => m[1]));
 function asset(ref, importer = 'index.html') {
   assert.ok(ref.startsWith('./') || ref.startsWith('../'), `Unexpected external resource in ${importer}: ${ref}`);
