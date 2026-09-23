@@ -13,8 +13,8 @@
 <link rel="apple-touch-icon" sizes="180x180" href="./icons/app-icon-180.png" />
 <link rel="icon" type="image/png" sizes="192x192" href="./icons/app-icon-192.png" />
 <title>两个人的美食地图</title>
-<script src="./vendor/supabase.js?v=2.7.0"></script>
-<link rel="stylesheet" href="./styles.css?v=2.7.0" />
+<script src="./vendor/supabase.js?v=2.8.0"></script>
+<link rel="stylesheet" href="./styles.css?v=2.8.0" />
 </head>
 <body>
 
@@ -65,6 +65,7 @@
       <div class="filter-bar" id="filterBar">
         <button class="chip active" data-filter="all">全部</button><button class="chip" data-filter="eaten">吃过</button><button class="chip" data-filter="wishlist">想吃</button><button class="chip" data-filter="favorite">共同最爱</button><button class="chip" data-filter="mine-pending">待我评分</button><button class="chip" data-filter="pending">待 TA 评分</button><button class="chip" data-filter="again">想二刷</button>
       </div>
+      <button type="button" class="comparison-entry" data-open="compare"><strong>⇄ 选店对比</strong><span data-compare-count>选 2–3 家，一起看 ›</span></button>
       <div class="record-views" id="recordViews" aria-label="记录展示方式"><button type="button" class="chip active" data-record-view="places">按店铺收纳</button><button type="button" class="chip" data-record-view="visits">逐次打卡</button></div>
       <details class="advanced-filters" id="advancedFilters"><summary><strong>精细筛选</strong><span id="advancedFilterCount">城市 · 分类 · 人均 · 日期</span></summary><div class="advanced-filter-body">
         <div class="field-row"><div class="field"><label for="filterCity">城市</label><select class="select" id="filterCity"><option value="">所有城市</option></select></div><div class="field"><label for="filterCategory">分类</label><select class="select" id="filterCategory"><option value="">所有分类</option></select></div></div>
@@ -183,6 +184,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <div class="sheet-wrap" id="decisionSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>今晚吃什么？</h3><p>先圈定偏好，再给今晚一点惊喜。</p></div><button type="button" class="x" data-close="decisionSheet" aria-label="关闭选店">×</button></div>
+  <button type="button" class="comparison-entry" data-open="compare"><strong>已经有几家备选？</strong><span data-compare-count>选 2–3 家，一起看 ›</span></button>
   <div class="form-section"><div class="field"><label for="decisionSource">从哪里选</label><select class="select" id="decisionSource"><option value="mixed">想吃 + 想二刷</option><option value="wishlist">只选想吃清单</option><option value="again">最近一次标记想二刷</option><option value="favorite">最近一次双方都最爱</option><option value="all">所有已记录的店</option></select></div>
     <div class="field-row"><div class="field"><label for="decisionCity">城市</label><select class="select" id="decisionCity"><option value="">所有城市</option></select></div><div class="field"><label for="decisionCategory">分类</label><select class="select" id="decisionCategory"><option value="">所有分类</option></select></div></div>
     <div class="field"><label for="decisionMaxPrice">这次人均不超过 ¥</label><input class="input" id="decisionMaxPrice" type="number" min="0" max="99999999.99" step="0.01" inputmode="decimal" placeholder="不限预算" /></div>
@@ -205,6 +207,12 @@
 
 <div class="sheet-wrap" id="placeCopySheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>复制餐厅信息</h3><p>把店名和地址，发给一起吃饭的人。</p></div><button type="button" class="x" data-close="placeCopySheet" aria-label="关闭复制信息">×</button></div><div class="form-section"><label for="placeCopyText" class="visually-hidden">待复制的餐厅信息</label><textarea id="placeCopyText" readonly rows="5"></textarea><p class="help-text" id="placeCopyMessage" role="status"></p><button type="button" class="save-btn" id="copyPlaceText">复制文字</button></div></div></div>
 
+<div class="sheet-wrap" id="compareSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>选店对比</h3><p>想吃得开心，也想选得明白。</p></div><button type="button" class="x" data-close="compareSheet" aria-label="关闭选店对比">×</button></div>
+  <p class="help-text">暂选仅保留在这次打开的页面中，不同步给另一半，不新增或修改打卡；重开页面后需重新选择。</p>
+  <div class="comparison-toolbar"><p id="compareStatus" role="status"></p><button type="button" class="text-btn" id="clearComparison">清空暂选</button></div><div class="comparison-selected" id="compareSelected"></div>
+  <details class="comparison-chooser" id="compareChooser" open><summary>添加 / 替换对比店铺</summary><div class="field"><label for="compareSearch">搜索店名、城市、分类或标签</label><input class="input" id="compareSearch" type="search" placeholder="例如：火锅、沈阳" /></div><div class="field"><label for="compareSource">从哪里选</label><select class="select" id="compareSource"><option value="all">所有店铺</option><option value="eaten">有吃过记录</option><option value="wishlist">有想吃计划</option></select></div><p class="help-text" id="compareMatches"></p><div class="comparison-candidates" id="compareCandidates"></div><button type="button" class="save-btn" id="showComparison">开始对比</button></details>
+  <div id="compareResults" tabindex="-1"></div>
+</div></div>
 <div class="sheet-wrap" id="tasksSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>待办中心</h3><p>不用一次写完，想起时再补一笔。</p></div><button type="button" class="x" data-close="tasksSheet" aria-label="关闭待办中心">×</button></div><div class="task-tabs" id="taskTabs" role="group" aria-label="待办类型"></div><p class="help-text" id="taskSummary"></p><div id="taskList"></div></div></div>
 <div class="sheet-wrap" id="helpSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>一起使用的小指南</h3><p>一顿饭，一条记录，两个人各自评价。</p></div><button type="button" class="x" data-close="helpSheet" aria-label="关闭使用帮助">×</button></div>
   <div class="form-section help-guide"><h4>第一次和对方一起用</h4><p>各自用自己的邮箱收验证码登录。一个人创建情侣空间，把邀请码发给另一人加入。在“我们 → 情侣空间”看到两人的名字，就是同一个空间了。</p></div>
@@ -216,10 +224,10 @@
 </div></div>
 <div class="sheet-wrap" id="updatesSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>版本与更新</h3><p>让新功能准备好，再由你决定重新打开。</p></div><button type="button" class="x" data-close="updatesSheet" aria-label="关闭版本与更新">×</button></div>
   <div class="form-section update-versions"><p><span>当前页面</span><strong id="runningVersion"></strong></p><p><span>已安装离线版本</span><strong id="cachedVersion">尚未确认</strong></p></div>
-  <div class="form-section help-guide"><h4>最近为你们完善了这些</h4><p>复访店铺的详情里新增“复访小结”：看人均、推荐菜和最近两次共同评分的变化。文字和照片可以先存本机草稿，待办中心帮你找到没评完的那一顿。</p><p>从 2.6 开始，可在这里检查更新。新版准备好后会提示，是否重新打开由你决定。</p></div>
+  <div class="form-section help-guide"><h4>最近为你们完善了这些</h4><p>记录页和“今晚吃啥”新增“选店对比”：暂选 2–3 家店，把味道、性价比、环境、实付人均和想吃预算放在一起看。每项标明来源，不拿未评当 0，也不把预算当实付。</p><p>复访小结、照片草稿和待办中心仍可继续使用。新版准备好后会提示，是否重新打开由你决定。</p></div>
   <div class="form-section"><p class="help-text" id="updateStatus" role="status"></p><p class="help-text" id="updateSafety"></p><button type="button" class="secondary" id="checkUpdate">检查更新</button><button type="button" class="save-btn" id="applyUpdate" style="margin-top:12px" disabled>更新并重新打开</button></div>
   <p class="help-text">不需要手动改网址，也不要清除网站数据。若浏览器限制了离线缓存，可联网关闭旧标签或 App 窗口，再重新打开网站。更新不能替代备份；未点保存或暂存的内容不会自动存下来。</p>
 </div></div>
-<script type="module" src="./app.js?v=2.7.0"></script>
+<script type="module" src="./app.js?v=2.8.0"></script>
 </body>
 </html>

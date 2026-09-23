@@ -1,19 +1,20 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.7.0';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.7.0';
-import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.7.0';
-import { CloudRepository } from './lib/cloud.js?v=2.7.0';
-import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.7.0';
-import { renderHTML } from './lib/dom.js?v=2.7.0';
-import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.7.0';
-import { filterRecords } from './lib/discovery.js?v=2.7.0';
-import { DiscoveryUI } from './lib/discovery-ui.js?v=2.7.0';
-import { DraftUI } from './lib/draft-ui.js?v=2.7.0';
-import { clearAccountDrafts } from './lib/drafts.js?v=2.7.0';
-import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.7.0';
-import { PhotoGallery } from './lib/gallery.js?v=2.7.0';
-import { DialogController } from './lib/dialogs.js?v=2.7.0';
-import { UpdateUI } from './lib/updates.js?v=2.7.0';
-import { insightsHTML } from './lib/insights.js?v=2.7.0';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.8.0';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.8.0';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.8.0';
+import { CloudRepository } from './lib/cloud.js?v=2.8.0';
+import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.8.0';
+import { renderHTML } from './lib/dom.js?v=2.8.0';
+import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.8.0';
+import { filterRecords } from './lib/discovery.js?v=2.8.0';
+import { DiscoveryUI } from './lib/discovery-ui.js?v=2.8.0';
+import { DraftUI } from './lib/draft-ui.js?v=2.8.0';
+import { clearAccountDrafts } from './lib/drafts.js?v=2.8.0';
+import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.8.0';
+import { PhotoGallery } from './lib/gallery.js?v=2.8.0';
+import { DialogController } from './lib/dialogs.js?v=2.8.0';
+import { UpdateUI } from './lib/updates.js?v=2.8.0';
+import { insightsHTML } from './lib/insights.js?v=2.8.0';
+import { ComparisonUI } from './lib/comparison-ui.js?v=2.8.0';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -57,6 +58,7 @@ function openSheet(id) {
   if (id === 'journalSheet') discovery.renderJournal();
   if (id === 'tasksSheet') renderTasks();
   if (id === 'updatesSheet') updates.render();
+  if (id === 'compareSheet') comparison.render();
 }
 function closeSheet(id, force = false) {
   if (!$('#' + id).classList.contains('open')) return;
@@ -120,6 +122,7 @@ function render() {
   drafts.render(); renderTasks();
   renderHeader(); renderHome(); renderRecords(); renderRank(); renderProfile(); renderTrash(); renderCategories();
   if (detailId) renderDetail(detailId);
+  comparison.render();
   photoGallery.sync();
   if (editor?.original && state.trash.some(r => r.id === editor.id)) showFormMessage('这条记录已被移到回收站，请先关闭编辑并恢复记录。未保存的内容仍在此处。');
 }
@@ -217,7 +220,7 @@ function renderDetail(id) {
     const review = rs.find(rv => rv.user_id === person);
     return `<div class="person-card"><div class="who">${memberAvatar(person, ownerName(person))}<span>${esc(ownerName(person))}</span></div>${CORE_DIMS.map(([key, label]) => `<div class="person-metric"><span>${label}</span><b>${formatScore(rating(review?.[key]))}</b></div>`).join('')}<div class="dimline"><span>综合</span><b>${formatScore(reviewScore(review))}</b></div>${EXTRA_DIMS.filter(([key]) => rating(review?.[key]) !== null).map(([key, label]) => `<div class="dimline"><span>${label}</span><b>${formatScore(review[key])}</b></div>`).join('')}${review?.favorite_dish ? `<div class="quote">推荐菜：${esc(review.favorite_dish)}</div>` : ''}${review?.comment ? `<div class="quote">${esc(review.comment)}</div>` : ''}<div class="tagline">${review?.favorite ? '<span class="tag loved">♥ 我的最爱</span>' : ''}${review?.would_return ? '<span class="tag return">想二刷</span>' : ''}</div></div>`;
   }).join('') : '<p class="help-text">还没去过，先记录预算和期待。吃过后再留下评分。</p>';
-  const detailVisits = `<div class="detail-visits">${tierHTML(r, true)}<p class="help-text">${esc(visitLabel(state, r))} · 同一家店的每次打卡独立保存。</p>${insightsHTML(state, r, esc)}${visitHistoryHTML(visitsFor(state, r), id)}<button type="button" class="secondary repeat-visit" data-repeat="${esc(id)}">${r.status === 'wishlist' ? '去打卡，写下这一顿' : '＋ 再来一次，新增打卡'}</button></div>`;
+  const detailVisits = `<div class="detail-visits">${tierHTML(r, true)}<p class="help-text">${esc(visitLabel(state, r))} · 同一家店的每次打卡独立保存。</p><button type="button" class="secondary" data-compare-add="${esc(id)}">加入选店对比</button>${insightsHTML(state, r, esc)}${visitHistoryHTML(visitsFor(state, r), id)}<button type="button" class="secondary repeat-visit" data-repeat="${esc(id)}">${r.status === 'wishlist' ? '去打卡，写下这一顿' : '＋ 再来一次，新增打卡'}</button></div>`;
   const detailMarkup = `<div class="detail-cover">${photoHTML(firstPhoto(id), r.name)}</div><h2 class="detail-title">${esc(r.name)}</h2><p class="detail-meta">${esc([r.city, r.category, r.address, r.visit_date ? `用餐 ${r.visit_date}` : ''].filter(Boolean).join(' · ') || '还没有补充地址')}</p><p class="help-text">上传于 ${esc(r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '未记录时间')}</p><button type="button" class="copy-place-btn" data-copy-place="${esc(id)}">复制店名与地址 ↗</button>${metricHTML(s, r.price_per_person, r.status === 'wishlist')}<div class="compare">${cards}</div><p class="help-text">${r.status === 'eaten' ? '分项为已填写分数的平均值；每人的评价独立保存，双方评完后共同入榜。' : '预算仅供挑选餐厅参考，不计入实付统计。'}</p>${photos.length ? `<div class="section-head"><h2>这一顿的照片 <small>${photos.length}</small></h2></div><div class="photo-wall">${photos.map(p => photoHTML(p, `${r.name} · ${ownerName(p.user_id)}`)).join('')}</div>` : ''}${detailVisits}<button type="button" class="save-btn" style="margin-top:18px" data-edit="${esc(id)}">${r.status === 'wishlist' ? '编辑 / 我们吃过了' : '编辑记录 / 写我的评价'}</button><button type="button" class="delete-record" data-delete="${esc(id)}">删除这条记录</button><p class="help-text">只删除这一顿，不影响同店其他打卡。可到“我们 → 回收站”恢复。</p>`;
   renderHTML($('#detailBody'), detailMarkup);
   restoreHistories('#detailBody', openedHistory);
@@ -391,6 +394,7 @@ async function changeSession(session) {
   discardIdentity(); closeSheet('identitySheet', true);
   drafts.reset(); activeTask = 'mine'; closeSheet('tasksSheet', true); renderHTML($('#taskList'), ''); renderHTML($('#taskTabs'), ''); $('#taskSummary').textContent = '';
   discovery.reset(); activeFilter = 'all'; recordView = 'places'; $('#recordSort').value = 'visit';
+  comparison.reset();
   sessionKnown = true; authEpoch++; user = nextUser; const epoch = authEpoch;
   if (previousUser && previousUser !== nextUser?.id) clearAccountDrafts(previousUser).catch(() => toast('退出已完成，但本机旧草稿清理未成功，请重新登录后在首页删除草稿', 7000));
   if (realtimeChannel) client.removeChannel(realtimeChannel); realtimeChannel = null; subscribedSpace = null; repository?.urls.clear();
@@ -679,9 +683,11 @@ const drafts = new DraftUI({ getScope: () => mode === 'local' ? 'local:local-me:
   lock: value => $$('#recordForm input, #recordForm button, #recordForm textarea, #recordForm select').forEach(el => el.disabled = value),
   afterStash: () => { discardEditor(); closeSheet('editSheet', true); closeSheet('detailSheet', true); switchPage('home'); }, toast, message: showFormMessage });
 const updates = new UpdateUI({ hasUnsaved: () => saving || photosBusy || editor?.dirty || profileSaving || avatarBusy || identity?.dirty || drafts.busy, toast });
+const comparison = new ComparisonUI({ getState: () => state, renderHTML, esc, openSheet, closeSheet, toast });
 document.addEventListener('click', event => {
   const target = event.target.closest('button, [data-open], [data-close], [data-filter-go], [data-go]'); if (!target || target.disabled) return;
   if (target.dataset.photo) return photoGallery.open(target.dataset.photo);
+  if (target.dataset.compareAdd) return comparison.add(target.dataset.compareAdd);
   if (target.dataset.taskFilter) { activeTask = target.dataset.taskFilter; return renderTasks(); }
   if (target.dataset.taskEdit) { closeSheet('tasksSheet', true); return openEditor(target.dataset.taskEdit); }
   if (target.dataset.copyPlace) { const r = state.restaurants.find(row => row.id === target.dataset.copyPlace); if (r) discovery.openCopy(r); return; }

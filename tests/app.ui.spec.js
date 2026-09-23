@@ -70,7 +70,7 @@ test('installed shell reloads offline and only removes its own old caches', asyn
     await navigator.serviceWorker.register('/service-worker.js'); await navigator.serviceWorker.ready;
   });
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
-  const keys = await page.evaluate(() => caches.keys()); expect(keys).toContain('other-application'); expect(keys).not.toContain('our-food-map-shell-v1'); expect(keys).toContain('our-food-map-shell-v12');
+  const keys = await page.evaluate(() => caches.keys()); expect(keys).toContain('other-application'); expect(keys).not.toContain('our-food-map-shell-v1'); expect(keys).toContain('our-food-map-shell-v13');
   await context.setOffline(true); await page.reload(); await expect(page.locator('#homeCards .food-card')).toContainText('离线本机档案'); await expect(page.locator('#connectionBanner')).toContainText('当前离线');
 });
 test('OTP errors and resend cooldown are visible without sending a real email', async ({ page }) => {
