@@ -1,20 +1,22 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.8.0';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.8.0';
-import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.8.0';
-import { CloudRepository } from './lib/cloud.js?v=2.8.0';
-import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.8.0';
-import { renderHTML } from './lib/dom.js?v=2.8.0';
-import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.8.0';
-import { filterRecords } from './lib/discovery.js?v=2.8.0';
-import { DiscoveryUI } from './lib/discovery-ui.js?v=2.8.0';
-import { DraftUI } from './lib/draft-ui.js?v=2.8.0';
-import { clearAccountDrafts } from './lib/drafts.js?v=2.8.0';
-import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.8.0';
-import { PhotoGallery } from './lib/gallery.js?v=2.8.0';
-import { DialogController } from './lib/dialogs.js?v=2.8.0';
-import { UpdateUI } from './lib/updates.js?v=2.8.0';
-import { insightsHTML } from './lib/insights.js?v=2.8.0';
-import { ComparisonUI } from './lib/comparison-ui.js?v=2.8.0';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.9.0';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.9.0';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.9.0';
+import { CloudRepository } from './lib/cloud.js?v=2.9.0';
+import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.9.0';
+import { renderHTML } from './lib/dom.js?v=2.9.0';
+import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.9.0';
+import { filterRecords } from './lib/discovery.js?v=2.9.0';
+import { DiscoveryUI } from './lib/discovery-ui.js?v=2.9.0';
+import { DraftUI } from './lib/draft-ui.js?v=2.9.0';
+import { clearAccountDrafts } from './lib/drafts.js?v=2.9.0';
+import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.9.0';
+import { PhotoGallery } from './lib/gallery.js?v=2.9.0';
+import { DialogController } from './lib/dialogs.js?v=2.9.0';
+import { UpdateUI } from './lib/updates.js?v=2.9.0';
+import { insightsHTML } from './lib/insights.js?v=2.9.0';
+import { ComparisonUI } from './lib/comparison-ui.js?v=2.9.0';
+import { withDeadline, singleFlight, recoveryFetch, connectionSummary, connectionReport } from './lib/connection.js?v=2.9.0';
+import { APP_VERSION } from './lib/updates.js?v=2.9.0';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -29,6 +31,9 @@ let editor = null, saving = false, photosBusy = false, detailId = null, cooldown
 let toastTimer, sessionKnown = false;
 let identity = null, avatarBusy = false, profileSaving = false;
 let activeTask = 'mine';
+let lastSyncAt = 0, authRevision = 0, retryBusy = false, needsLogin = false, signingOut = false;
+let backgroundSyncPending = false;
+const startInitialization = singleFlight();
 const selfId = () => user?.id || 'local-me';
 const myReview = id => reviewsFor(state, id).find(r => r.user_id === selfId());
 const partnerReview = id => reviewsFor(state, id).find(r => r.user_id !== selfId());
@@ -59,6 +64,7 @@ function openSheet(id) {
   if (id === 'tasksSheet') renderTasks();
   if (id === 'updatesSheet') updates.render();
   if (id === 'compareSheet') comparison.render();
+  if (id === 'connectionSheet') renderConnection();
 }
 function closeSheet(id, force = false) {
   if (!$('#' + id).classList.contains('open')) return;
@@ -137,7 +143,7 @@ function renderTrash() {
 function renderHeader() {
   const connected = mode === 'cloud' && state.space && syncStatus === 'ready' && navigator.onLine;
   $('#syncDot').className = `sync-dot ${connected ? 'cloud' : 'local'}`;
-  $('#helloLine').textContent = mode === 'loading' ? '正在读取档案…' : !navigator.onLine ? '当前离线' : mode === 'local' ? '本机档案 · 仅保存在这台设备' : !state.space ? '已登录 · 等待加入空间' : connected ? '双人空间 · 已同步' : '云同步待重试';
+  $('#helloLine').textContent = connectionSummary(connectionState()).title;
   $('#pageTitle').textContent = { home: '今天吃什么？', records: '我们的记录', rank: '美食榜单', profile: '我们的小档案' }[activePage];
   $('#spaceName').textContent = state.space?.name || '我们的美食地图';
   renderHTML($('#faceMe'), avatarHTML(avatarURL(selfId()), state.nickname)); renderHTML($('#profileFace'), avatarHTML(avatarURL(selfId()), state.nickname));
@@ -145,9 +151,22 @@ function renderHeader() {
   const match = tasteMatch(state, selfId());
   $('#matchScore').textContent = match.value === null ? '—' : `${match.value}%`;
   $('#matchScore').title = match.count ? `基于 ${match.count} 次双方都填写味道分的打卡` : '双方给同一顿的味道评分后生成';
-  $('#heroMembers').textContent = mode !== 'cloud' ? '登录后和 TA 一起记录 ›' : !state.space ? '创建或加入情侣空间 ›' : state.members.length === 2 ? `${state.nickname} 和 ${state.partnerName} · 两人已加入 ›` : '1/2 位成员 · 等待另一半加入 ›';
-  const warning = !navigator.onLine ? (mode === 'cloud' ? '当前离线，云端记录暂时不能保存；已加载的内容仍可查看。' : '当前离线，本机记录仍可保存。') : syncStatus === 'error' ? '同步失败，已显示的内容会保留。请点右上角 ↻ 重试。' : mode === 'cloud' && !state.space && syncStatus === 'ready' ? '请先在“我们 → 情侣空间”创建或加入空间，再添加共同记录。' : '';
+  $('#heroMembers').textContent = mode !== 'cloud' ? '登录后和 TA 一起记录 ›' : !state.space ? syncStatus === 'ready' ? '创建或加入情侣空间 ›' : '共同档案尚未读取 · 查看连接 ›' : state.members.length === 2 ? `${state.nickname} 和 ${state.partnerName} · 两人已加入 ›` : '1/2 位成员 · 等待另一半加入 ›';
+  const warning = !navigator.onLine || syncStatus === 'error' || needsLogin ? connectionSummary(connectionState()).detail : mode === 'cloud' && !state.space && syncStatus === 'ready' ? '请先在“我们 → 情侣空间”创建或加入空间，再添加共同记录。' : '';
   $('#connectionBanner').textContent = warning; $('#connectionBanner').classList.toggle('hidden', !warning);
+  $('#connectionActions').classList.toggle('hidden', !warning);
+  renderConnection();
+}
+function connectionState() { return { version: APP_VERSION, mode, syncStatus, online: navigator.onLine, hasSpace: !!state.space, lastSyncAt, needsLogin }; }
+function renderConnection() {
+  const info = connectionSummary(connectionState());
+  $('#connectionTitle').textContent = info.title; $('#connectionDetail').textContent = info.detail;
+  $('#connectionNetwork').textContent = navigator.onLine ? '浏览器显示在线（服务连接仍可能失败）' : '浏览器显示离线';
+  $('#connectionLastSync').textContent = lastSyncAt ? new Date(lastSyncAt).toLocaleString('zh-CN', { hour12: false }) : '本页尚未成功读取云端';
+  $('#profileConnection').textContent = info.title;
+  $('#connectionReport').value = connectionReport(connectionState());
+  $('#refreshBtn').disabled = retryBusy; $('#refreshBtn').textContent = retryBusy ? '…' : '↻';
+  for (const id of ['retryConnection', 'retryConnectionBanner']) { $('#' + id).disabled = retryBusy; $('#' + id).textContent = retryBusy ? '正在重试…' : '安全重试'; }
 }
 function renderHome() {
   const eaten = sortRestaurants(state.restaurants.filter(r => r.status === 'eaten'), state);
@@ -185,11 +204,12 @@ function renderRank() {
 }
 function renderProfile() {
   $('#profileName').textContent = state.nickname || '我'; $('#profileSub').textContent = user?.email || '本机档案 · 登录后可使用双人空间';
-  $('#cloudBadge').textContent = user ? (syncStatus === 'error' ? '待重试' : '已登录') : mode === 'loading' ? '加载中' : '本机模式';
+  $('#cloudBadge').textContent = syncStatus === 'error' ? '待重试' : user ? '已登录' : mode === 'loading' ? '加载中' : '本机模式';
   $('#cloudBadge').className = `mode-badge ${user && syncStatus !== 'error' ? 'online' : ''}`;
   $('#coupleSummary').textContent = state.space ? `${state.space.name} · ${state.members.length}/2 位成员` : '创建或通过邀请码加入';
   $('#coupleLoggedOut').classList.toggle('hidden', !!user); $('#coupleLoggedIn').classList.toggle('hidden', !user);
-  $('#spaceSetup').classList.toggle('hidden', !!state.space); $('#currentSpaceBox').classList.toggle('hidden', !state.space);
+  $('#spaceSetup').classList.toggle('hidden', !!state.space || syncStatus !== 'ready'); $('#currentSpaceBox').classList.toggle('hidden', !state.space);
+  $('#spaceLoading').classList.toggle('hidden', !user || !!state.space || syncStatus === 'ready');
   if (state.space) {
     $('#currentSpaceName').textContent = state.space.name; $('#currentInviteCode').textContent = state.space.invite_code;
     $('#memberStatus').textContent = state.members.length === 2 ? '两人已加入' : '等待另一半加入';
@@ -198,7 +218,7 @@ function renderProfile() {
   } else {
     $('#currentSpaceName').textContent = ''; $('#currentInviteCode').textContent = ''; $('#memberStatus').textContent = ''; renderHTML($('#memberList'), '');
   }
-  $('#authStatus').textContent = user ? `当前账号：${user.email}。${state.space ? '已连接情侣空间。' : '登录成功，请创建或加入情侣空间。'}` : '用自己的邮箱登录，收到验证码后回到当前页面输入。';
+  $('#authStatus').textContent = user ? `当前账号：${user.email}。${state.space ? '已连接情侣空间。' : syncStatus === 'ready' ? '登录成功，请创建或加入情侣空间。' : '共同档案尚未读取完成，请先安全重试。'}` : mode === 'loading' ? '登录状态尚未确认，请先在“连接与恢复”中安全重试。不会清除你的档案。' : '用自己的邮箱登录，收到验证码后回到当前页面输入。';
   $('#loginForm').classList.toggle('hidden', !!user); $('#logoutBtn').classList.toggle('hidden', !user);
   $('#importInput').disabled = !!user; $('#importLabel').disabled = !!user; $('#importLabel').classList.toggle('disabled', !!user);
   $('#backupHelp').textContent = user ? '当前为云端模式，可导出完整备份。为避免混入其他空间，导入只在退出登录后的本机模式开放。' : '导入会合并到本机档案，不会替换已存在的同编号记录，也不会自动上传到云端。';
@@ -389,14 +409,16 @@ async function saveRecord(event) {
 
 async function changeSession(session) {
   const nextUser = session?.user || null;
+  if (nextUser) needsLogin = false;
   if (sessionKnown && user?.id === nextUser?.id) { if (nextUser) scheduleSync(); return; }
-  const previousUser = user?.id;
   discardIdentity(); closeSheet('identitySheet', true);
   drafts.reset(); activeTask = 'mine'; closeSheet('tasksSheet', true); renderHTML($('#taskList'), ''); renderHTML($('#taskTabs'), ''); $('#taskSummary').textContent = '';
   discovery.reset(); activeFilter = 'all'; recordView = 'places'; $('#recordSort').value = 'visit';
   comparison.reset();
   sessionKnown = true; authEpoch++; user = nextUser; const epoch = authEpoch;
-  if (previousUser && previousUser !== nextUser?.id) clearAccountDrafts(previousUser).catch(() => toast('退出已完成，但本机旧草稿清理未成功，请重新登录后在首页删除草稿', 7000));
+  // Expiry is not an explicit logout: keep account-scoped drafts for the next login.
+  // The logout button still clears only that account's drafts, before signing out.
+  lastSyncAt = 0;
   if (realtimeChannel) client.removeChannel(realtimeChannel); realtimeChannel = null; subscribedSpace = null; repository?.urls.clear();
   state = emptyData(); syncStatus = 'loading'; mode = nextUser ? 'cloud' : 'loading';
   if (editor && !saving) { discardEditor(); closeSheet('editSheet', true); }
@@ -411,7 +433,7 @@ async function changeSession(session) {
   if (nextUser) {
     try { await refreshCloud(); } catch { /* Banner provides retry. */ }
   } else {
-    try { const local = await loadLocal(); if (epoch !== authEpoch) return; state = local; mode = 'local'; syncStatus = 'ready'; }
+    try { const local = await withDeadline(loadLocal()); if (epoch !== authEpoch) return; state = local; mode = 'local'; syncStatus = 'ready'; }
     catch (error) { if (epoch !== authEpoch) return; mode = 'local'; syncStatus = 'error'; toast(friendly(error)); }
     render();
   }
@@ -422,19 +444,26 @@ function refreshCloud() {
   const operation = async () => {
     if (epoch !== authEpoch) return;
     try {
-      const next = await repo.load(account);
+      const next = await withDeadline(repo.load(account), 25000);
       if (epoch !== authEpoch) return;
       const me = next.members.find(m => m.user_id === account), other = next.members.find(m => m.user_id !== account);
       const incoming = { ...emptyData(), ...next, nickname: me?.nickname || state.nickname || '我', partnerName: other?.nickname || 'TA' };
       const changed = JSON.stringify(incoming) !== JSON.stringify(state), recovered = syncStatus !== 'ready';
-      state = incoming; syncStatus = 'ready';
+      state = incoming; syncStatus = 'ready'; lastSyncAt = Date.now();
       if (changed || recovered) render(); else renderHeader();
       subscribeRealtime(); repo.cleanup(account); repo.cleanupAvatars(account);
     } catch (error) { if (epoch === authEpoch) { syncStatus = 'error'; renderHeader(); renderProfile(); } throw error; }
   };
   syncChain = syncChain.catch(() => {}).then(operation); return syncChain;
 }
-function scheduleSync() { clearTimeout(syncTimer); syncTimer = setTimeout(() => refreshCloud().catch(() => {}), 200); }
+function scheduleSync() {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    if (backgroundSyncPending) return;
+    backgroundSyncPending = true;
+    refreshCloud().catch(() => {}).finally(() => { backgroundSyncPending = false; });
+  }, 200);
+}
 function subscribeRealtime() {
   if (!state.space || !user || subscribedSpace === state.space.id) return;
   if (realtimeChannel) client.removeChannel(realtimeChannel);
@@ -448,15 +477,29 @@ function subscribeRealtime() {
 }
 async function initCloud() {
   try {
-    let cfg = DEFAULT_CONFIG;
-    try { cfg = { ...DEFAULT_CONFIG, ...JSON.parse(localStorage.getItem('couple_food_supabase_config_v1') || '{}') }; } catch { /* Use deployed defaults. */ }
-    if (!window.supabase) throw new Error('登录组件加载失败，请刷新页面');
-    client = window.supabase.createClient(cfg.url, cfg.key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-    repository = new CloudRepository(client);
-    const { data, error } = await client.auth.getSession(); if (error) throw error;
-    await changeSession(data.session);
-    client.auth.onAuthStateChange((_event, session) => { setTimeout(() => changeSession(session), 0); });
-  } catch (error) { toast(friendly(error)); if (!sessionKnown) { mode = 'loading'; syncStatus = 'error'; renderHeader(); } }
+    if (!sessionKnown) { syncStatus = 'loading'; renderHeader(); }
+    await withDeadline(startInitialization(async () => {
+      if (!client) {
+        let cfg = DEFAULT_CONFIG;
+        try { cfg = { ...DEFAULT_CONFIG, ...JSON.parse(localStorage.getItem('couple_food_supabase_config_v1') || '{}') }; } catch { /* Use deployed defaults. */ }
+        if (!window.supabase) throw new Error('登录组件加载失败，请在“版本与更新”检查更新');
+        client = window.supabase.createClient(cfg.url, cfg.key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }, global: { fetch: recoveryFetch() } });
+        repository = new CloudRepository(client);
+        client.auth.onAuthStateChange((event, session) => {
+          if (event === 'INITIAL_SESSION') return; // getSession owns initial state and its errors.
+          if (event === 'SIGNED_OUT') needsLogin = !signingOut;
+          const revision = ++authRevision;
+          setTimeout(() => { if (revision === authRevision) changeSession(session).catch(error => toast(friendly(error))); }, 0);
+        });
+      }
+      const revision = authRevision;
+      const { data, error } = await client.auth.getSession(); if (error) throw error;
+      if (revision === authRevision) await changeSession(data.session);
+    }));
+  } catch (error) {
+    if (!sessionKnown) { syncStatus = 'error'; renderHeader(); renderProfile(); }
+    throw error;
+  }
 }
 async function buttonAction(button, fn, busyText = '请稍候…') {
   if (button.disabled) return;
@@ -465,12 +508,14 @@ async function buttonAction(button, fn, busyText = '请稍候…') {
   finally { button.disabled = false; button.textContent = text; }
 }
 async function sendEmailCode() {
+  if (!sessionKnown) { openSheet('connectionSheet'); return toast('请先安全重试，确认原登录状态后再发送验证码'); }
   if (!client) return toast('登录组件尚未就绪，请刷新');
   if (Date.now() < cooldownUntil) return;
   const email = $('#loginEmail').value.trim(); if (!email || !$('#loginEmail').reportValidity()) return toast('请输入有效邮箱');
   await buttonAction($('#sendEmailCode'), async () => {
     const { error } = await client.auth.signInWithOtp({ email, options: { shouldCreateUser: true } }); if (error) throw error;
-    sessionStorage.setItem(LOGIN_EMAIL_KEY, email); $('#otpLoginBox').classList.remove('hidden'); $('#loginOtp').value = ''; $('#loginOtp').focus(); cooldownUntil = Date.now() + 60000; toast('验证码已发送，请查看邮箱');
+    try { sessionStorage.setItem(LOGIN_EMAIL_KEY, email); } catch { /* Email stays in the current form. */ }
+    $('#otpLoginBox').classList.remove('hidden'); $('#loginOtp').value = ''; $('#loginOtp').focus(); cooldownUntil = Date.now() + 60000; toast('验证码已发送，请查看邮箱');
   }, '正在发送…'); updateCooldown();
 }
 function updateCooldown() {
@@ -480,11 +525,13 @@ function updateCooldown() {
   }
 }
 async function verifyEmailCode() {
+  if (!sessionKnown) { openSheet('connectionSheet'); return toast('请先安全重试，确认原登录状态'); }
   const email = $('#loginEmail').value.trim(), token = $('#loginOtp').value.trim();
   if (!client || !email || !/^\d{6,8}$/.test(token)) return toast('请输入邮箱和邮件中的完整数字验证码');
   await buttonAction($('#verifyEmailCode'), async () => {
     const { data, error } = await client.auth.verifyOtp({ email, token, type: 'email' }); if (error) throw error;
-    sessionStorage.removeItem(LOGIN_EMAIL_KEY); await changeSession(data.session); closeSheet('cloudSheet'); toast('登录成功'); if (!state.space) openSheet('coupleSheet');
+    try { sessionStorage.removeItem(LOGIN_EMAIL_KEY); } catch { /* Do not turn a successful login into an error. */ }
+    authRevision++; await changeSession(data.session); closeSheet('cloudSheet'); toast('登录成功'); if (!state.space) openSheet('coupleSheet');
   }, '正在登录…');
 }
 async function spaceAction(join) {
@@ -572,12 +619,18 @@ async function saveNickname() {
   finally { profileSaving = false; lockIdentity(false); }
 }
 async function refreshManual() {
-  await buttonAction($('#refreshBtn'), async () => {
-    if (!sessionKnown) await initCloud();
-    else if (mode === 'cloud') { repository.urls.clear(); await refreshCloud(); }
-    else { state = await loadLocal(); syncStatus = 'ready'; render(); }
-    toast('成员、记录和照片已刷新');
-  }, '…');
+  if (retryBusy) return;
+  retryBusy = true; renderConnection();
+  try {
+    await withDeadline((async () => {
+      if (!sessionKnown) await initCloud();
+      else if (mode === 'cloud') { repository.urls.clear(); await refreshCloud(); }
+      else { const epoch = authEpoch, next = await withDeadline(loadLocal()); if (epoch !== authEpoch) return; state = next; syncStatus = 'ready'; render(); }
+    })(), 27000);
+    if (syncStatus !== 'ready') throw new Error('连接仍未完成，请稍后重试；原有档案未清除');
+    toast(mode === 'local' ? '本机档案已重新读取；没有上传云端' : '共同档案已重新读取');
+  } catch (error) { toast(friendly(error), 6500); }
+  finally { retryBusy = false; renderConnection(); }
 }
 async function copyInvite() {
   try { await navigator.clipboard.writeText(state.space.invite_code); toast('邀请码已复制'); }
@@ -733,6 +786,13 @@ document.addEventListener('keydown', event => {
 $$('.setting-row[data-open]').forEach(row => { row.setAttribute('role', 'button'); row.tabIndex = 0; });
 $$('.sheet-wrap').forEach(wrap => wrap.addEventListener('click', event => { if (event.target === wrap) closeSheet(wrap.id); }));
 $('#mainAdd').onclick = () => openEditor(); $('#syncBtn').onclick = () => openSheet('cloudSheet'); $('#refreshBtn').onclick = refreshManual;
+$('#retryConnection').onclick = refreshManual; $('#retryConnectionBanner').onclick = refreshManual;
+$('#connectionOpenUpdates').onclick = () => openSheet('updatesSheet'); $('#connectionOpenCloud').onclick = () => openSheet('cloudSheet');
+$('#copyConnectionReport').onclick = async () => {
+  renderConnection();
+  try { await navigator.clipboard.writeText($('#connectionReport').value); toast('已复制不含个人信息的连接报告'); }
+  catch { $('#connectionReport').focus(); $('#connectionReport').select(); toast('无法自动复制，可长按选中的报告复制'); }
+};
 $('#searchInput').oninput = renderRecords; $('#recordSort').onchange = renderRecords;
 $('#searchInput').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); event.target.blur(); } };
 $('#recordPlace').onchange = selectPlace;
@@ -753,12 +813,19 @@ $('#nicknameInput').oninput = () => { if (identity) identity.dirty = true; };
 $('#sendEmailCode').onclick = sendEmailCode; $('#verifyEmailCode').onclick = verifyEmailCode; $('#loginOtp').onkeydown = event => { if (event.key === 'Enter') verifyEmailCode(); };
 $('#createSpaceBtn').onclick = () => spaceAction(false); $('#joinSpaceBtn').onclick = () => spaceAction(true); $('#saveNickname').onclick = saveNickname; $('#copyInviteBtn').onclick = copyInvite;
 $('#refreshMembers').onclick = () => buttonAction($('#refreshMembers'), async () => { await refreshCloud(); toast('成员状态已更新'); });
-$('#logoutBtn').onclick = () => buttonAction($('#logoutBtn'), async () => { if (saving || profileSaving || drafts.busy) throw new Error('请等待保存完成后再退出'); await clearAccountDrafts(user?.id); const { error } = await client.auth.signOut({ scope: 'local' }); if (error) throw error; await changeSession(null); closeSheet('cloudSheet'); toast('已退出此设备，切换到本机档案'); });
+$('#logoutBtn').onclick = () => buttonAction($('#logoutBtn'), async () => {
+  if (saving || profileSaving || drafts.busy) throw new Error('请等待保存完成后再退出');
+  signingOut = true;
+  try {
+    await clearAccountDrafts(user?.id); const { error } = await client.auth.signOut({ scope: 'local' }); if (error) throw error;
+    authRevision++; needsLogin = false; await changeSession(null); closeSheet('cloudSheet'); toast('已退出此设备，切换到本机档案');
+  } finally { signingOut = false; }
+});
 $('#exportBtn').onclick = exportBackup; $('#importInput').onchange = event => importBackup(event.target.files[0]);
 $('#importLabel').onclick = () => $('#importInput').click();
 $('#installAppBtn').onclick = installApp;
 window.addEventListener('beforeunload', event => { if (saving || photosBusy || editor?.dirty || profileSaving || avatarBusy || identity?.dirty || drafts.busy) { event.preventDefault(); event.returnValue = ''; } });
-window.addEventListener('online', () => { renderHeader(); if (user) scheduleSync(); }); window.addEventListener('offline', renderHeader);
+window.addEventListener('online', () => { renderHeader(); if (!sessionKnown) initCloud().catch(() => {}); else if (user) scheduleSync(); }); window.addEventListener('offline', renderHeader);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && user && navigator.onLine) scheduleSync(); });
 // Keep visible pages current even if the WebSocket silently misses an event or reconnects.
 setInterval(() => { if (!document.hidden && user && navigator.onLine) scheduleSync(); }, 20000);
@@ -766,5 +833,5 @@ setInterval(updateCooldown, 1000);
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); deferredInstallPrompt = event; updateInstallUI(); });
 window.addEventListener('appinstalled', () => { deferredInstallPrompt = null; updateInstallUI(); toast('已添加到手机桌面'); });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./service-worker.js', { updateViaCache: 'none' }).then(reg => updates.connect(reg)).then(() => updates.check()).catch(() => {});
-const pending = sessionStorage.getItem(LOGIN_EMAIL_KEY); if (pending) { $('#loginEmail').value = pending; $('#otpLoginBox').classList.remove('hidden'); }
-render(); initCloud();
+try { const pending = sessionStorage.getItem(LOGIN_EMAIL_KEY); if (pending) { $('#loginEmail').value = pending; $('#otpLoginBox').classList.remove('hidden'); } } catch { /* Restricted sessionStorage must not block startup. */ }
+render(); initCloud().catch(error => toast(friendly(error), 6500));

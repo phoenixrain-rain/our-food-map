@@ -7,11 +7,15 @@ const parts = pkg.version.split('.').map(Number), future = `${parts[0]}.${parts[
 const photo = { name: 'upgrade.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1cAAAAASUVORK5CYII=', 'base64') };
 
 async function updateServer() {
-  const root = path.resolve(import.meta.dirname, '..'); let newer = false, failAsset = false;
+  const root = path.resolve(import.meta.dirname, '..'); let newer = false, failAsset = false, stalled = false;
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost'), pathname = url.pathname.endsWith('/') ? url.pathname + 'index.html' : url.pathname;
+      if (stalled && pathname === '/index.html') {
+        if (stalled === 'body') { res.writeHead(200,{'Content-Type':'text/html'}); res.write('<!doctype html>'); }
+        return;
+      }
       const file = path.resolve(root, '.' + decodeURIComponent(pathname));
       if (!file.startsWith(root + path.sep) || /[\\/](node_modules|\.git|\.private-audit)([\\/]|$)/.test(file)) { res.writeHead(403); res.end(); return; }
       if (failAsset && pathname === '/lib/updates.js' && url.searchParams.get('v') === future) { res.writeHead(503); res.end(); return; }
@@ -22,13 +26,25 @@ async function updateServer() {
     } catch { res.writeHead(404); res.end(); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { url: `http://127.0.0.1:${server.address().port}`, next: (broken = false) => { newer = true; failAsset = broken; }, close: () => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); } };
+  return { url: `http://127.0.0.1:${server.address().port}`, stall: (phase = 'headers') => { stalled = phase; }, next: (broken = false) => { newer = true; failAsset = broken; }, close: () => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); } };
 }
 async function register(page) {
   await page.evaluate(async () => { await navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }); await navigator.serviceWorker.ready; });
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
   await expect(page.locator('#cachedVersion')).toHaveText(pkg.version);
 }
+
+for (const phase of ['headers','body']) test(`navigation stalled at ${phase} falls back without clearing local records`, async ({ page, context }) => {
+  const server = await updateServer();
+  try {
+    await page.goto(server.url); await expect(page.locator('#helloLine')).toContainText('本机档案'); await register(page);
+    await page.locator('#mainAdd').click(); await page.locator('#restaurantName').fill('弱网前保存的记录'); await page.locator('#saveRecordBtn').click();
+    await expect(page.locator('#editSheet')).not.toHaveClass(/open/); server.stall(phase);
+    await page.reload({waitUntil:'domcontentloaded',timeout:18000});
+    await expect(page.locator('#homeCards')).toContainText('弱网前保存的记录');
+    await expect(page.locator('#runningVersion')).toHaveText(pkg.version);
+  } finally { await context.close(); await server.close(); }
+});
 
 test('an installed newer version never reloads an editor and explicit upgrade preserves records and photo drafts offline', async ({ page, context }) => {
   test.setTimeout(60000); const server = await updateServer(); const errors = []; page.on('pageerror', error => errors.push(error.message));
