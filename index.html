@@ -9,15 +9,72 @@
 <meta name="apple-mobile-web-app-title" content="美食地图" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="format-detection" content="telephone=no" />
+<script>
+// This recovery path must work even when the SDK, module graph, or stylesheet fails.
+(() => {
+  let started = false, retrying = false;
+  const register = () => {
+    if (location.protocol !== 'https:' || !('serviceWorker' in navigator)) return Promise.resolve(null);
+    return navigator.serviceWorker.register('./service-worker.js', { updateViaCache: 'none' }).then(registration => {
+      // Repair an evicted shell even when its unchanged worker does not reinstall.
+      registration.active?.postMessage({ type: 'FOOD_MAP_REPAIR_SHELL' });
+      return registration;
+    }).catch(() => null);
+  };
+  let registration = register();
+  const timer = setTimeout(() => {
+    if (started) return;
+    const panel = document.getElementById('startupRecovery');
+    if (panel) { panel.hidden = false; panel.style.setProperty('display', 'block', 'important'); }
+  }, 15000);
+  window.addEventListener('food-map-ready', () => {
+    started = true; clearTimeout(timer); document.getElementById('startupRecovery')?.remove();
+  }, { once: true });
+  document.addEventListener('click', async event => {
+    const button = event.target.closest?.('#retryStartup');
+    if (!button || started || retrying) return;
+    retrying = true; button.disabled = true; button.textContent = '正在检查资源…';
+    let timeout;
+    try {
+      await Promise.race([
+        (async () => {
+          const current = await registration || await (registration = register());
+          if (!current) return;
+          await current.update().catch(() => {});
+          const worker = current.installing || current.waiting;
+          if (worker && !['activated', 'redundant'].includes(worker.state)) {
+            await new Promise(resolve => {
+              const changed = () => {
+                if (['activated', 'redundant'].includes(worker.state)) {
+                  worker.removeEventListener('statechange', changed); resolve();
+                }
+              };
+              worker.addEventListener('statechange', changed); changed();
+            });
+          }
+        })().catch(() => {}),
+        new Promise(resolve => { timeout = setTimeout(resolve, 6000); })
+      ]);
+    } finally { clearTimeout(timeout); }
+    // Loading may have completed while update() was pending. Never reload a started editor.
+    if (!started) location.reload();
+  });
+})();
+</script>
 <link rel="manifest" href="./manifest.webmanifest" />
 <link rel="apple-touch-icon" sizes="180x180" href="./icons/app-icon-180.png" />
 <link rel="icon" type="image/png" sizes="192x192" href="./icons/app-icon-192.png" />
 <title>两个人的美食地图</title>
-<script src="./vendor/supabase.js?v=2.9.0"></script>
-<link rel="stylesheet" href="./styles.css?v=2.9.0" />
+<script defer src="./vendor/supabase.js?v=2.9.1"></script>
+<link rel="stylesheet" href="./styles.css?v=2.9.1" />
 </head>
 <body>
-
+<aside id="startupRecovery" hidden role="alert" style="display:none!important;position:fixed;z-index:2147483647;top:16px;left:16px;right:16px;max-width:520px;margin:0 auto;padding:20px;box-sizing:border-box;background:#fffdf7;color:#234638;border:2px solid #356149;border-radius:18px;box-shadow:0 8px 40px #0003;font:16px/1.6 system-ui,sans-serif;text-align:left">
+  <strong style="display:block;font-size:20px">页面资源尚未加载完成</strong>
+  <p style="margin:10px 0">网络较慢或更新下载未完成。可以继续等候，或联网后检查资源并重新打开。</p>
+  <p style="margin:10px 0">此操作不清除登录、本机记录或已暂存草稿；请勿清除网站数据或卸载应用。</p>
+  <button id="retryStartup" type="button" style="display:block;width:100%;padding:12px;border:0;border-radius:12px;background:#28553d;color:white;font:inherit;cursor:pointer">检查资源并重新打开</button>
+</aside>
 
 <div class="app">
   <div class="statusbar-space"></div>
@@ -176,11 +233,12 @@
 
 <div class="sheet-wrap" id="backupSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>数据备份</h3><p>导出包含记录、评价和可读取的照片。导入会合并到本机档案。</p></div><button class="x" data-close="backupSheet">×</button></div><div class="form-section"><button class="secondary" id="exportBtn">导出完整备份</button><button type="button" class="secondary" style="display:block;text-align:center;margin-top:9px" id="importLabel">合并导入本机备份</button><input type="file" id="importInput" accept="application/json" class="hidden" aria-label="选择本机备份文件"><p class="help-text" id="backupHelp"></p></div></div></div>
 
-<div class="sheet-wrap" id="installSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>安装到手机</h3><p>安装后从桌面图标启动，不再显示浏览器地址栏。</p></div><button class="x" data-close="installSheet">×</button></div>
+<div class="sheet-wrap" id="installSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>安装到手机</h3><p>支持的浏览器可独立运行；普通快捷方式仍可能打开浏览器。</p></div><button class="x" data-close="installSheet">×</button></div>
   <div class="auth-intro"><div class="icon">📱</div><h3>把美食地图变成手机 App</h3><p id="installStatus">正在检查当前浏览器的安装方式…</p></div>
   <button class="save-btn" id="installAppBtn">安装到手机</button>
   <div class="form-section" style="margin-top:11px"><h4>iPhone / iPad</h4><div class="step"><div class="step-no">1</div><div><strong>使用 Safari 打开</strong><span>点击底部的“分享”按钮。</span></div></div><div class="step"><div class="step-no">2</div><div><strong>选择“添加到主屏幕”</strong><span>开启“作为网页 App 打开”，再点“添加”。</span></div></div></div>
-  <div class="form-section"><h4>Android</h4><div class="step"><div class="step-no">1</div><div><strong>使用 Chrome 打开</strong><span>点击页面里的“安装到手机”，或打开右上角菜单。</span></div></div><div class="step"><div class="step-no">2</div><div><strong>选择“安装应用”</strong><span>确认后会出现在手机桌面。</span></div></div></div>
+  <div class="form-section"><h4>Android</h4><div class="step"><div class="step-no">1</div><div><strong>在常用浏览器打开</strong><span>例如 Chrome；已有本机记录时优先使用原来的浏览器，不要清理它的数据。</span></div></div><div class="step"><div class="step-no">2</div><div><strong>选择“安装应用”或“添加到主屏幕”</strong><span>具体入口与安装形式由手机和浏览器决定。请保留安装时使用的浏览器。</span></div></div></div>
+  <div class="form-section help-guide"><h4>桌面提示“应用不存在”？</h4><p>这可能是手机启动入口或浏览器的问题，不等于云端记录被删除。先在原浏览器直接打开下方网址；如果能打开而桌面图标不能，请记录手机品牌、浏览器及报错截图，检查原浏览器是否仍安装且可用。</p><p style="overflow-wrap:anywhere">浏览器备用网址：https://phoenixrain-rain.github.io/our-food-map/</p><p>不要先卸载、清理浏览器或重建空间。本机档案与草稿不一定能在另一个浏览器中看到；网页更新也无法直接修复系统中已经失效的应用入口。</p></div>
 </div></div>
 
 <div class="lightbox hidden" id="photoViewer" role="dialog" aria-modal="true" aria-label="查看照片"><button type="button" class="viewer-close" id="closePhotoViewer" aria-label="关闭照片">×</button><button type="button" class="viewer-nav previous" id="previousPhoto" aria-label="上一张">‹</button><div class="viewer-body"><img id="viewerImage" alt="餐厅照片" /><p id="viewerCaption"></p><button type="button" class="secondary hidden" id="retryPhoto">重新加载</button></div><button type="button" class="viewer-nav next" id="nextPhoto" aria-label="下一张">›</button></div>
@@ -228,8 +286,9 @@
 </div></div>
 <div class="sheet-wrap" id="updatesSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>版本与更新</h3><p>让新功能准备好，再由你决定重新打开。</p></div><button type="button" class="x" data-close="updatesSheet" aria-label="关闭版本与更新">×</button></div>
   <div class="form-section update-versions"><p><span>当前页面</span><strong id="runningVersion"></strong></p><p><span>已安装离线版本</span><strong id="cachedVersion">尚未确认</strong></p></div>
-  <div class="form-section help-guide"><h4>最近为你们完善了这些</h4><p>新增“连接与恢复”：登录和云端读取等待较久时会提示安全重试，可查看本页最近成功同步时间，复制不含个人信息的连接报告。</p><p>自然登录失效不会主动删除账号草稿；网络失败也不会把空档案写回云端。选店对比、复访小结和月度食记仍可继续使用。</p></div>
+  <div class="form-section help-guide"><h4>最近为你们完善了这些</h4><p>修复更新失败后的新旧缓存混用；完整安装后可离线打开页面，本机资源缺失时联网补齐。慢网络会先提示继续等待，返回 App 时也会重新核对连接。</p><p>新增本机存储保护申请与独立启动恢复入口。不清理档案，不自动刷新正在编辑的页面；云端保存和登录续期仍需网络。</p></div>
   <div class="form-section"><p class="help-text" id="updateStatus" role="status"></p><p class="help-text" id="updateSafety"></p><button type="button" class="secondary" id="checkUpdate">检查更新</button><button type="button" class="save-btn" id="applyUpdate" style="margin-top:12px" disabled>更新并重新打开</button></div>
+  <div class="form-section"><h4>保护桌面 App 的本机存储</h4><p id="storageProtection" class="help-text" role="status">正在检查浏览器的存储保护…</p><button type="button" class="secondary" id="protectStorage">申请保护本机存储</button><p class="help-text">由浏览器决定是否允许，可降低空间不足时被自动清理的概率；不是备份，也不能阻止手动清理、卸载或系统清理工具。不会延长服务器的登录权限。</p></div>
   <p class="help-text">不需要手动改网址，也不要清除网站数据。若浏览器限制了离线缓存，可联网关闭旧标签或 App 窗口，再重新打开网站。更新不能替代备份；未点保存或暂存的内容不会自动存下来。</p>
 </div></div>
 <div class="sheet-wrap" id="connectionSheet"><div class="sheet"><div class="grab"></div><div class="sheet-head"><div><h3>连接与恢复</h3><p>先确认连接，再找回熟悉的档案。</p></div><button type="button" class="x" data-close="connectionSheet">×</button></div>
@@ -239,6 +298,6 @@
   <div class="form-section help-guide"><h4>重试会做什么？</h4><p>重新确认连接并读取当前档案，不清空数据、不自动发送验证码，也不重新创建空间。重试不刷新整页，已暂存草稿会保留；本机档案不会自动上传。</p><p>若持续失败，可以切换网络后重试。仍未恢复时，请保留当前浏览器数据并提供下方报告。不要卸载应用或清除站点数据。</p><button type="button" class="text-btn" id="connectionOpenUpdates">检查应用版本 ›</button><button type="button" class="text-btn" id="connectionOpenCloud">邮箱登录 ›</button></div>
   <details class="connection-report"><summary>查看不含个人信息的连接报告</summary><label for="connectionReport">可复制的排查信息</label><textarea id="connectionReport" class="input" readonly rows="8" spellcheck="false"></textarea><button type="button" class="secondary" id="copyConnectionReport">复制连接报告</button><p class="help-text">只包含版本、网络、档案状态与本页同步时间，不含邮箱、邀请码、记录、照片地址或登录凭据；不会自动发送给任何人。</p></details>
 </div></div>
-<script type="module" src="./app.js?v=2.9.0"></script>
+<script type="module" src="./app.js?v=2.9.1"></script>
 </body>
 </html>

@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withDeadline, singleFlight, recoveryFetch, connectionSummary, connectionReport } from '../lib/connection.js';
+import { withDeadline, singleFlight, recoveryFetch, connectionSummary, connectionReport, REQUEST_TIMEOUT_MS, CLOUD_READ_TIMEOUT_MS, SLOW_NOTICE_MS } from '../lib/connection.js';
+
+test('slow-network budgets separate a progress notice from request and full-read failure', () => {
+  assert.equal(SLOW_NOTICE_MS, 15000);
+  assert.equal(REQUEST_TIMEOUT_MS, 30000);
+  assert.equal(CLOUD_READ_TIMEOUT_MS, 90000);
+  const base = { mode: 'cloud', syncStatus: 'loading', online: true, hasSpace: true, lastSyncAt: 1, slow: true };
+  assert.match(connectionSummary(base).title, /仍在读取/);
+  assert.doesNotMatch(connectionSummary(base).detail, /失败|超时/);
+  assert.match(connectionSummary({ ...base, syncStatus: 'error' }).title, /待重试/);
+  assert.match(connectionReport({ ...base, version: '2.9.1' }), /仍在读取/);
+});
 
 test('deadline settles success and errors, and a timed-out wait never applies a late result', async () => {
   assert.equal(await withDeadline(Promise.resolve(7), 10), 7);
@@ -58,8 +69,8 @@ test('connection copy never labels an unread space as empty or a failed read as 
   assert.match(connectionSummary({ ...base, mode: 'loading' }).title, /安全重试/);
 });
 test('diagnostic report allows only non-identifying fields', () => {
-  const report = connectionReport({ version: '2.9.0', mode: 'cloud', syncStatus: 'ready', online: true, hasSpace: true, lastSyncAt: 1000,
+  const report = connectionReport({ version: '2.9.1', mode: 'cloud', syncStatus: 'ready', online: true, hasSpace: true, lastSyncAt: 1000,
     email: 'secret@example.com', error: 'Bearer SECRET', token: 'SECRET', invite: 'PRIVATE', url: 'https://private.invalid' });
-  assert.match(report, /2.9.0/); assert.match(report, /1970-01-01T00:00:01.000Z/);
+  assert.match(report, /2.9.1/); assert.match(report, /1970-01-01T00:00:01.000Z/);
   assert.doesNotMatch(report, /secret@example|SECRET|PRIVATE|private.invalid/);
 });

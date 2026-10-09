@@ -1,10 +1,10 @@
 import { test, expect } from '@playwright/test';
 
 const fixture = { space: { id: 'space-a', name: '原来的空间', invite_code: 'PRIVATE-CODE' }, members: [{ user_id: 'user-a', nickname: '我' }], restaurants: [{ id: 'meal-a', place_id: 'place-a', name: '原来的记录', status: 'eaten', visit_date: '2026-09-20', created_at: '2026-09-20T00:00:00Z', tags: [] }], trash: [], reviews: [], photos: [] };
-async function mockCloud(page, { pending = false, session = null, loadError = false } = {}) {
+async function mockCloud(page, { pending = false, session = null, loadError = false, loadPending = false } = {}) {
   await page.addInitScript(args => {
-    window.connectionMock = { ...args, getCalls: 0, loadCalls: 0, clients: 0, listeners: 0, getError: false, loadError: args.loadError, emit: (event, session) => window.connectionMock.callback(event, session) };
-  }, { pending, session, loadError, data: fixture });
+    window.connectionMock = { ...args, loads: [], getCalls: 0, loadCalls: 0, clients: 0, listeners: 0, getError: false, loadError: args.loadError, emit: (event, session) => window.connectionMock.callback(event, session) };
+  }, { pending, session, loadError, loadPending, data: fixture });
   await page.route('**/vendor/supabase.js*', route => route.fulfill({ contentType: 'text/javascript', body: `window.supabase = { createClient() {
     const m = window.connectionMock; m.clients++;
     return { auth: { getSession: async () => { m.getCalls++; if(m.pending) return new Promise(resolve => { m.resolve = resolve; }); return { data:{session:m.session}, error:m.getError ? new Error('Synthetic network failure'):null }; },
@@ -13,13 +13,22 @@ async function mockCloud(page, { pending = false, session = null, loadError = fa
       channel: () => ({ on(){return this;},subscribe(){return this;} }), removeChannel(){} };
   }};` }));
   await page.route('**/lib/cloud.js*', route => route.fulfill({ contentType: 'text/javascript', body: `export class CloudRepository {
-    constructor(){ this.urls=new Map(); } async load(){const m=window.connectionMock; m.loadCalls++; if(m.loadError) throw new Error('Synthetic network failure'); return structuredClone(m.data);}
+    constructor(){ this.urls=new Map(); } async load(account){const m=window.connectionMock; m.loadCalls++; if(m.loadError) throw new Error('Synthetic network failure'); const data=structuredClone(m.data); if(m.loadPending) return new Promise(resolve=>m.loads.push({account,resolve:()=>resolve(data)})); return data;}
     cleanup(){} cleanupAvatars(){} queueCleanup(){}
   }` }));
 }
 async function seedLocal(page) {
   await page.addInitScript(() => { localStorage.setItem('couple_food_mobile_v2', JSON.stringify({ restaurants: [{ id: 'local-meal', name: '本机旧档案', status: 'eaten' }], photos: [], reviews: [] })); });
 }
+
+test('returning to the desktop app automatically retries failed initialization without another login', async ({ page }) => {
+  await mockCloud(page); await seedLocal(page);
+  await page.addInitScript(() => { window.connectionMock.getError = true; });
+  await page.goto('/'); await expect(page.locator('#helloLine')).toContainText('可安全重试');
+  await page.evaluate(() => { connectionMock.getError = false; window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); });
+  await expect(page.locator('#helloLine')).toContainText('本机档案'); await expect(page.locator('#homeCards')).toContainText('本机旧档案');
+  expect(await page.evaluate(() => [connectionMock.clients, connectionMock.getCalls])).toEqual([1,2]);
+});
 
 test('initial failure has a recoverable state and retry preserves local records; sessionStorage denial does not block startup', async ({ page }) => {
   await mockCloud(page); await seedLocal(page);
@@ -32,15 +41,57 @@ test('initial failure has a recoverable state and retry preserves local records;
   expect(await page.evaluate(() => [connectionMock.clients, connectionMock.listeners])).toEqual([1,1]);
 });
 
-test('hung startup shows timeout, repeated retry shares initialization and late success recovers without clearing data', async ({ page }) => {
+test('slow startup is not reported as failure, shares retries, and a late success retains local records', async ({ page }) => {
   await mockCloud(page, { pending: true }); await seedLocal(page); await page.clock.install();
   await page.goto('/'); await expect.poll(() => page.evaluate(() => connectionMock.getCalls)).toBe(1);
-  await page.clock.fastForward(16000); await expect(page.locator('#helloLine')).toContainText('可安全重试');
+  await page.clock.fastForward(16000); await expect(page.locator('#helloLine')).toContainText('仍在读取');
   await page.locator('#retryConnectionBanner').click(); await page.clock.fastForward(16000);
-  await expect(page.locator('#retryConnectionBanner')).toBeEnabled();
+  await expect(page.locator('#retryConnectionBanner')).toBeDisabled();
   expect(await page.evaluate(() => [connectionMock.clients, connectionMock.getCalls])).toEqual([1,1]);
   await page.evaluate(() => connectionMock.resolve({ data: { session: null }, error: null }));
   await expect(page.locator('#helloLine')).toContainText('本机档案'); await expect(page.locator('#homeCards')).toContainText('本机旧档案');
+});
+
+test('permanently pending auth releases after the hard deadline and a stale result cannot replace retry success', async ({ page }) => {
+  await mockCloud(page, { pending: true }); await seedLocal(page); await page.clock.install();
+  await page.goto('/'); await expect.poll(() => page.evaluate(() => connectionMock.getCalls)).toBe(1);
+  await page.clock.fastForward(91000); await expect(page.locator('#helloLine')).toContainText('可安全重试');
+  await page.evaluate(() => { connectionMock.pending = false; }); await page.locator('#retryConnectionBanner').click();
+  await expect(page.locator('#helloLine')).toContainText('本机档案');
+  await page.evaluate(() => connectionMock.resolve({ data: { session: { user: { id: 'stale-account' } } }, error: null }));
+  await expect(page.locator('#homeCards')).toContainText('本机旧档案');
+  await expect(page.locator('#profileSub')).not.toContainText('stale-account');
+  expect(await page.evaluate(() => [connectionMock.clients, connectionMock.listeners, connectionMock.getCalls, connectionMock.loadCalls])).toEqual([1,1,2,0]);
+});
+
+test('slow cloud read survives former deadlines and polling or manual retry does not queue duplicate reads', async ({ page }) => {
+  await mockCloud(page, { session: { user: { id: 'user-a' } }, loadPending: true }); await page.clock.install();
+  await page.goto('/'); await expect.poll(() => page.evaluate(() => connectionMock.loadCalls)).toBe(1);
+  await page.clock.fastForward(16000); await expect(page.locator('#helloLine')).toContainText('仍在读取');
+  await page.locator('#retryConnectionBanner').click();
+  // Pass both the former 25s load and 27s queued-manual deadlines, plus two polls.
+  await page.clock.fastForward(30000); await expect(page.locator('#retryConnectionBanner')).toBeDisabled();
+  expect(await page.evaluate(() => connectionMock.loadCalls)).toBe(1);
+  await page.evaluate(() => { connectionMock.loadPending = false; connectionMock.loads[0].resolve(); });
+  await expect(page.locator('#helloLine')).toContainText('已同步'); await expect(page.locator('#homeCards')).toContainText('原来的记录');
+  await page.clock.fastForward(1000);
+  expect(await page.evaluate(() => [connectionMock.clients, connectionMock.loadCalls])).toEqual([1,1]);
+});
+
+test('a new identity need not wait for an old slow read and its late result cannot leak back', async ({ page }) => {
+  await mockCloud(page, { session: { user: { id: 'user-a', email: 'a@example.invalid' } }, loadPending: true }); await page.clock.install();
+  await page.goto('/'); await expect.poll(() => page.evaluate(() => connectionMock.loads.length)).toBe(1);
+  await page.clock.fastForward(16000);
+  await page.evaluate(() => {
+    connectionMock.loadPending = false;
+    connectionMock.data = { space: { id: 'space-b', name: '新账号空间' }, members: [{ user_id: 'user-b' }], restaurants: [{ id: 'meal-b', name: '新账号记录', status: 'eaten', tags: [] }], trash: [], reviews: [], photos: [] };
+    connectionMock.emit('SIGNED_IN', { user: { id: 'user-b', email: 'b@example.invalid' } });
+  });
+  await expect(page.locator('#homeCards')).toContainText('新账号记录');
+  await page.evaluate(() => connectionMock.loads[0].resolve());
+  await expect(page.locator('#profileSub')).toHaveText('b@example.invalid');
+  await expect(page.locator('#homeCards')).not.toContainText('原来的记录');
+  await expect(page.locator('#helloLine')).toContainText('已同步');
 });
 
 test('failed cloud load does not suggest recreating a space; recovery tracks sync and a later failure retains records and editor input', async ({ page }) => {
@@ -99,9 +150,9 @@ test('connection panel fits small screens, reports offline correctly, and never 
   await page.locator('#resumeDraft').click(); await expect.poll(() => page.locator('#photoPreviews img').evaluate(img=>img.naturalWidth)).toBeGreaterThan(0);
 });
 
-for (const halfBody of [false, true]) test(`real bundled SDK recovers a renewal stalled ${halfBody ? 'after' : 'before'} headers and retains the stored session`, async ({ page }) => {
+for (const phase of ['before headers', 'after headers', 'slow success']) test(`real bundled SDK safely handles renewal: ${phase}`, async ({ page }) => {
   await page.clock.install();
-  await page.addInitScript(halfBody => {
+  await page.addInitScript(phase => {
     const user = { id:'00000000-0000-4000-8000-000000000001', aud:'authenticated', role:'authenticated', email:'synthetic@example.invalid' };
     const jwt = expiry => `${btoa(JSON.stringify({alg:'HS256',typ:'JWT'}))}.${btoa(JSON.stringify({sub:user.id,aud:'authenticated',exp:expiry}))}.synthetic`;
     window.renewal = { recover:false, attempts:0, aborted:0, valid: { access_token:jwt(Math.floor(Date.now()/1000)+3600),refresh_token:'synthetic-renewed-token',expires_in:3600,token_type:'bearer',user } };
@@ -112,7 +163,13 @@ for (const halfBody of [false, true]) test(`real bundled SDK recovers a renewal 
       if (String(input).startsWith('https://diagnostic.invalid/auth/v1/token')) {
         renewal.attempts++;
         if (!renewal.recover) {
-          if (halfBody) {
+          if (phase === 'slow success') {
+            return new Promise((resolve, reject) => {
+              const timer = setTimeout(() => resolve(new Response(JSON.stringify(renewal.valid), { headers: { 'Content-Type': 'application/json' } })), 20000);
+              init.signal.addEventListener('abort', () => { clearTimeout(timer); renewal.aborted++; reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+            });
+          }
+          if (phase === 'after headers') {
             init.signal.addEventListener('abort',()=>{renewal.aborted++;},{once:true});
             return Promise.resolve(new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('{'));}}),{headers:{'Content-Type':'application/json'}}));
           }
@@ -123,13 +180,22 @@ for (const halfBody of [false, true]) test(`real bundled SDK recovers a renewal 
       if (String(input).startsWith('https://diagnostic.invalid/')) return Promise.resolve(new Response('[]',{status:200,headers:{'Content-Type':'application/json'}}));
       return original(input,init);
     };
-  }, halfBody);
+  }, phase);
   await page.route('**/lib/cloud.js*', route => route.fulfill({contentType:'text/javascript',body:`export class CloudRepository {constructor(){this.urls=new Map();}async load(){return {space:null,members:[],restaurants:[],trash:[],reviews:[],photos:[]};}cleanup(){}cleanupAvatars(){}}`}));
   await page.goto('/'); await expect.poll(()=>page.evaluate(()=>renewal.attempts)).toBe(1);
+  await page.clock.fastForward(16000); await expect(page.locator('#helloLine')).toContainText('仍在读取');
+  expect(await page.evaluate(()=>renewal.aborted)).toBe(0);
+  if (phase === 'slow success') {
+    await page.clock.fastForward(5000); await expect(page.locator('#helloLine')).toContainText('已登录');
+    expect(await page.evaluate(()=>[renewal.attempts,renewal.aborted])).toEqual([1,0]);
+    expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('sb-diagnostic-auth-token')).refresh_token)).toBe('synthetic-renewed-token');
+    return;
+  }
   await page.clock.fastForward(16000); await expect(page.locator('#helloLine')).toContainText('可安全重试');
   expect(await page.evaluate(()=>renewal.aborted)).toBeGreaterThan(0);
   expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('sb-diagnostic-auth-token')).refresh_token)).toBe('synthetic-old-token');
-  await page.evaluate(()=>{renewal.recover=true;}); await page.clock.fastForward(1000);
+  // Respect the bundled SDK's 60s failed-refresh cooldown instead of spinning.
+  await page.evaluate(()=>{renewal.recover=true;}); await page.clock.fastForward(61000);
   await expect(page.locator('#helloLine')).toContainText('已登录');
   expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('sb-diagnostic-auth-token')).refresh_token)).toBe('synthetic-renewed-token');
 });

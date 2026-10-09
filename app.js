@@ -1,22 +1,26 @@
-import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.9.0';
-import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.9.0';
-import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.9.0';
-import { CloudRepository } from './lib/cloud.js?v=2.9.0';
-import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.9.0';
-import { renderHTML } from './lib/dom.js?v=2.9.0';
-import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.9.0';
-import { filterRecords } from './lib/discovery.js?v=2.9.0';
-import { DiscoveryUI } from './lib/discovery-ui.js?v=2.9.0';
-import { DraftUI } from './lib/draft-ui.js?v=2.9.0';
-import { clearAccountDrafts } from './lib/drafts.js?v=2.9.0';
-import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.9.0';
-import { PhotoGallery } from './lib/gallery.js?v=2.9.0';
-import { DialogController } from './lib/dialogs.js?v=2.9.0';
-import { UpdateUI } from './lib/updates.js?v=2.9.0';
-import { insightsHTML } from './lib/insights.js?v=2.9.0';
-import { ComparisonUI } from './lib/comparison-ui.js?v=2.9.0';
-import { withDeadline, singleFlight, recoveryFetch, connectionSummary, connectionReport } from './lib/connection.js?v=2.9.0';
-import { APP_VERSION } from './lib/updates.js?v=2.9.0';
+import { CORE_DIMS, EXTRA_DIMS, DIMS, emptyData, rating, mean, reviewScore, isComplete, formatScore, formatPrice, todayLocal, reviewsFor, summary, tasteMatch, sortRestaurants, rankedRestaurants, filterRestaurants, safeImageURL, validateRestaurant, validateBackup, placeKey, groupRestaurants, visitsFor, visitLabel } from './lib/model.js?v=2.9.1';
+import { compressPhoto, blobDataURL, MAX_PHOTOS } from './lib/photos.js?v=2.9.1';
+import { loadLocal, mutateLocal } from './lib/local-store.js?v=2.9.1';
+import { CloudRepository } from './lib/cloud.js?v=2.9.1';
+import { loadAvatar, drawAvatar, avatarFile } from './lib/avatar.js?v=2.9.1';
+import { renderHTML } from './lib/dom.js?v=2.9.1';
+import { visitTier, VISIT_TIERS } from './lib/model.js?v=2.9.1';
+import { filterRecords } from './lib/discovery.js?v=2.9.1';
+import { DiscoveryUI } from './lib/discovery-ui.js?v=2.9.1';
+import { DraftUI } from './lib/draft-ui.js?v=2.9.1';
+import { clearAccountDrafts } from './lib/drafts.js?v=2.9.1';
+import { recordTasks, TASK_KINDS } from './lib/tasks.js?v=2.9.1';
+import { PhotoGallery } from './lib/gallery.js?v=2.9.1';
+import { DialogController } from './lib/dialogs.js?v=2.9.1';
+import { UpdateUI } from './lib/updates.js?v=2.9.1';
+import { insightsHTML } from './lib/insights.js?v=2.9.1';
+import { ComparisonUI } from './lib/comparison-ui.js?v=2.9.1';
+import { withDeadline, singleFlight, recoveryFetch, connectionSummary, connectionReport, CLOUD_READ_TIMEOUT_MS, SLOW_NOTICE_MS } from './lib/connection.js?v=2.9.1';
+import { APP_VERSION } from './lib/updates.js?v=2.9.1';
+
+// Do not expose a half-started editor when the login bundle failed to load.
+// The independent HTML recovery control can then retry resources safely.
+if (!window.supabase?.createClient) throw new Error('登录组件未加载完成，请重试页面资源');
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -32,7 +36,8 @@ let toastTimer, sessionKnown = false;
 let identity = null, avatarBusy = false, profileSaving = false;
 let activeTask = 'mine';
 let lastSyncAt = 0, authRevision = 0, retryBusy = false, needsLogin = false, signingOut = false;
-let backgroundSyncPending = false;
+let pendingCloudRead = null;
+const slowConnections = new Set();
 const startInitialization = singleFlight();
 const selfId = () => user?.id || 'local-me';
 const myReview = id => reviewsFor(state, id).find(r => r.user_id === selfId());
@@ -152,12 +157,23 @@ function renderHeader() {
   $('#matchScore').textContent = match.value === null ? '—' : `${match.value}%`;
   $('#matchScore').title = match.count ? `基于 ${match.count} 次双方都填写味道分的打卡` : '双方给同一顿的味道评分后生成';
   $('#heroMembers').textContent = mode !== 'cloud' ? '登录后和 TA 一起记录 ›' : !state.space ? syncStatus === 'ready' ? '创建或加入情侣空间 ›' : '共同档案尚未读取 · 查看连接 ›' : state.members.length === 2 ? `${state.nickname} 和 ${state.partnerName} · 两人已加入 ›` : '1/2 位成员 · 等待另一半加入 ›';
-  const warning = !navigator.onLine || syncStatus === 'error' || needsLogin ? connectionSummary(connectionState()).detail : mode === 'cloud' && !state.space && syncStatus === 'ready' ? '请先在“我们 → 情侣空间”创建或加入空间，再添加共同记录。' : '';
+  const warning = !navigator.onLine || syncStatus === 'error' || needsLogin || connectionState().slow ? connectionSummary(connectionState()).detail : mode === 'cloud' && !state.space && syncStatus === 'ready' ? '请先在“我们 → 情侣空间”创建或加入空间，再添加共同记录。' : '';
   $('#connectionBanner').textContent = warning; $('#connectionBanner').classList.toggle('hidden', !warning);
   $('#connectionActions').classList.toggle('hidden', !warning);
   renderConnection();
 }
-function connectionState() { return { version: APP_VERSION, mode, syncStatus, online: navigator.onLine, hasSpace: !!state.space, lastSyncAt, needsLogin }; }
+function connectionState() { return { version: APP_VERSION, mode, syncStatus, online: navigator.onLine, hasSpace: !!state.space, lastSyncAt, needsLogin, slow: [...slowConnections].some(wait => wait.epoch === authEpoch) }; }
+function observeConnection(operation, epoch = authEpoch) {
+  const wait = { epoch };
+  const timer = setTimeout(() => {
+    if (epoch !== authEpoch) return;
+    slowConnections.add(wait); renderHeader();
+  }, SLOW_NOTICE_MS);
+  return withDeadline(operation, CLOUD_READ_TIMEOUT_MS).finally(() => {
+    clearTimeout(timer);
+    if (slowConnections.delete(wait)) renderHeader();
+  });
+}
 function renderConnection() {
   const info = connectionSummary(connectionState());
   $('#connectionTitle').textContent = info.title; $('#connectionDetail').textContent = info.detail;
@@ -416,6 +432,9 @@ async function changeSession(session) {
   discovery.reset(); activeFilter = 'all'; recordView = 'places'; $('#recordSort').value = 'visit';
   comparison.reset();
   sessionKnown = true; authEpoch++; user = nextUser; const epoch = authEpoch;
+  // A new identity must not wait behind the previous account's slow read.
+  // In-flight old results still fail the epoch check before updating the UI.
+  syncChain = Promise.resolve(); pendingCloudRead = null; slowConnections.clear();
   // Expiry is not an explicit logout: keep account-scoped drafts for the next login.
   // The logout button still clears only that account's drafts, before signing out.
   lastSyncAt = 0;
@@ -438,13 +457,16 @@ async function changeSession(session) {
     render();
   }
 }
-function refreshCloud() {
+function refreshCloud({ reuse = false, refreshPhotos = false } = {}) {
   if (!user || !repository) return Promise.resolve();
   const account = user.id, epoch = authEpoch, repo = repository;
+  if (reuse && pendingCloudRead?.epoch === epoch) return pendingCloudRead.promise;
   const operation = async () => {
     if (epoch !== authEpoch) return;
     try {
-      const next = await withDeadline(repo.load(account), 25000);
+      if (refreshPhotos) repo.urls.clear();
+      if (syncStatus === 'error') { syncStatus = 'loading'; renderHeader(); renderProfile(); }
+      const next = await observeConnection(repo.load(account), epoch);
       if (epoch !== authEpoch) return;
       const me = next.members.find(m => m.user_id === account), other = next.members.find(m => m.user_id !== account);
       const incoming = { ...emptyData(), ...next, nickname: me?.nickname || state.nickname || '我', partnerName: other?.nickname || 'TA' };
@@ -454,14 +476,19 @@ function refreshCloud() {
       subscribeRealtime(); repo.cleanup(account); repo.cleanupAvatars(account);
     } catch (error) { if (epoch === authEpoch) { syncStatus = 'error'; renderHeader(); renderProfile(); } throw error; }
   };
-  syncChain = syncChain.catch(() => {}).then(operation); return syncChain;
+  // Post-write callers intentionally enqueue a fresh read. Manual retry and
+  // polling join that latest read rather than creating an unbounded queue.
+  const flight = { epoch, promise: null };
+  syncChain = syncChain.catch(() => {}).then(operation).finally(() => { if (pendingCloudRead === flight) pendingCloudRead = null; });
+  flight.promise = syncChain; pendingCloudRead = flight; return syncChain;
 }
 function scheduleSync() {
   clearTimeout(syncTimer);
+  // A poll/auth notification already covered by this read must not become a
+  // delayed duplicate just because its debounce runs after the read completes.
+  if (pendingCloudRead?.epoch === authEpoch) return;
   syncTimer = setTimeout(() => {
-    if (backgroundSyncPending) return;
-    backgroundSyncPending = true;
-    refreshCloud().catch(() => {}).finally(() => { backgroundSyncPending = false; });
+    refreshCloud({ reuse: true }).catch(() => {});
   }, 200);
 }
 function subscribeRealtime() {
@@ -478,7 +505,7 @@ function subscribeRealtime() {
 async function initCloud() {
   try {
     if (!sessionKnown) { syncStatus = 'loading'; renderHeader(); }
-    await withDeadline(startInitialization(async () => {
+    await startInitialization(async () => {
       if (!client) {
         let cfg = DEFAULT_CONFIG;
         try { cfg = { ...DEFAULT_CONFIG, ...JSON.parse(localStorage.getItem('couple_food_supabase_config_v1') || '{}') }; } catch { /* Use deployed defaults. */ }
@@ -493,9 +520,9 @@ async function initCloud() {
         });
       }
       const revision = authRevision;
-      const { data, error } = await client.auth.getSession(); if (error) throw error;
+      const { data, error } = await observeConnection(client.auth.getSession()); if (error) throw error;
       if (revision === authRevision) await changeSession(data.session);
-    }));
+    });
   } catch (error) {
     if (!sessionKnown) { syncStatus = 'error'; renderHeader(); renderProfile(); }
     throw error;
@@ -622,11 +649,11 @@ async function refreshManual() {
   if (retryBusy) return;
   retryBusy = true; renderConnection();
   try {
-    await withDeadline((async () => {
-      if (!sessionKnown) await initCloud();
-      else if (mode === 'cloud') { repository.urls.clear(); await refreshCloud(); }
-      else { const epoch = authEpoch, next = await withDeadline(loadLocal()); if (epoch !== authEpoch) return; state = next; syncStatus = 'ready'; render(); }
-    })(), 27000);
+    const epoch = authEpoch, revision = authRevision, wasKnown = sessionKnown;
+    if (!sessionKnown) await initCloud();
+    else if (mode === 'cloud') await refreshCloud({ reuse: true, refreshPhotos: true });
+    else { const next = await withDeadline(loadLocal()); if (epoch !== authEpoch) return; state = next; syncStatus = 'ready'; render(); }
+    if (wasKnown && (epoch !== authEpoch || revision !== authRevision)) return;
     if (syncStatus !== 'ready') throw new Error('连接仍未完成，请稍后重试；原有档案未清除');
     toast(mode === 'local' ? '本机档案已重新读取；没有上传云端' : '共同档案已重新读取');
   } catch (error) { toast(friendly(error), 6500); }
@@ -826,12 +853,21 @@ $('#importLabel').onclick = () => $('#importInput').click();
 $('#installAppBtn').onclick = installApp;
 window.addEventListener('beforeunload', event => { if (saving || photosBusy || editor?.dirty || profileSaving || avatarBusy || identity?.dirty || drafts.busy) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('online', () => { renderHeader(); if (!sessionKnown) initCloud().catch(() => {}); else if (user) scheduleSync(); }); window.addEventListener('offline', renderHeader);
-document.addEventListener('visibilitychange', () => { if (!document.hidden && user && navigator.onLine) scheduleSync(); });
+function resumeConnection() {
+  if (document.hidden || !navigator.onLine) return;
+  if (!sessionKnown && syncStatus === 'error') initCloud().catch(() => {});
+  else if (user) scheduleSync();
+}
+document.addEventListener('visibilitychange', resumeConnection);
+window.addEventListener('pageshow', event => { if (event.persisted) resumeConnection(); });
 // Keep visible pages current even if the WebSocket silently misses an event or reconnects.
-setInterval(() => { if (!document.hidden && user && navigator.onLine) scheduleSync(); }, 20000);
+setInterval(resumeConnection, 20000);
 setInterval(updateCooldown, 1000);
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); deferredInstallPrompt = event; updateInstallUI(); });
 window.addEventListener('appinstalled', () => { deferredInstallPrompt = null; updateInstallUI(); toast('已添加到手机桌面'); });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./service-worker.js', { updateViaCache: 'none' }).then(reg => updates.connect(reg)).then(() => updates.check()).catch(() => {});
 try { const pending = sessionStorage.getItem(LOGIN_EMAIL_KEY); if (pending) { $('#loginEmail').value = pending; $('#otpLoginBox').classList.remove('hidden'); } } catch { /* Restricted sessionStorage must not block startup. */ }
-render(); initCloud().catch(error => toast(friendly(error), 6500));
+render();
+// The standalone loader can now retire; cloud readiness is tracked separately.
+window.dispatchEvent(new Event('food-map-ready'));
+initCloud().catch(error => toast(friendly(error), 6500));
